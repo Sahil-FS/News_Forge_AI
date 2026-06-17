@@ -410,7 +410,8 @@ def get_safe_upload_time(channel_key: str) -> str:
 def get_geo_scheduled_upload_time(channel_key: str, country: str | None = None) -> str:
     """
     Calculate the next optimized publish time in UTC based on the target country and/or historical learning.
-    Falls back to normal safe upload time if country is not specified or offset could not be determined.
+    Ensures that multiple videos scheduled on the same day are spaced out during local daytime hours (9 AM to 7 PM),
+    falling back to target peak hours only when crossing timezone boundaries or night hours.
     """
     from datetime import datetime, timedelta, timezone
     import random
@@ -432,8 +433,6 @@ def get_geo_scheduled_upload_time(channel_key: str, country: str | None = None) 
         opt_hour_utc = None
 
     # 2. Hardcoded fallback active awake hours in UTC if database has no data
-    # We want to schedule within the country's local daytime (e.g., 10 AM to 6 PM)
-    # Mapping below returns target UTC hours for local afternoon (approx 14:00 local time)
     country_to_utc_hour = {
         "IN": 8,   # 1:30 PM IST = 8:00 UTC
         "US": 18,  # 1:00 PM EST = 18:00 UTC
@@ -462,18 +461,66 @@ def get_geo_scheduled_upload_time(channel_key: str, country: str | None = None) 
         print(f"[Scheduling] Error parsing baseline time '{baseline_time_str}': {e}. Using current time.")
         baseline_dt = datetime.now(timezone.utc)
 
-    # Let's adjust baseline_dt to target the opt_hour_utc
-    target_dt = baseline_dt.replace(hour=opt_hour_utc, minute=0, second=0, microsecond=0)
-    
-    # Add a small random jitter (e.g., 0-30 minutes) to avoid exact top-of-the-hour uploads
-    jitter_minutes = random.randint(0, 30)
-    target_dt += timedelta(minutes=jitter_minutes)
+    # 3. Timezone-aware daytime scheduling window
+    def get_country_utc_offset(c: str) -> float:
+        offsets = {
+            "IN": 5.5,
+            "US": -5.0,
+            "GB": 0.0,
+            "UK": 0.0,
+            "CA": -5.0,
+            "AU": 10.0,
+            "DE": 1.0,
+            "FR": 1.0,
+            "RU": 3.0,
+            "JP": 9.0,
+            "BR": -3.0,
+            "CN": 8.0,
+        }
+        return offsets.get(c, 0.0)
 
+    offset = get_country_utc_offset(country)
+    local_dt = baseline_dt + timedelta(hours=offset)
+
+    # Allow publishing if the local time falls in 9:00 AM to 7:00 PM local time (9 to 19)
+    if 9 <= local_dt.hour < 19:
+        # Already in daytime window, keep baseline spacing
+        target_local_dt = local_dt
+        print(f"[Scheduling] Keeping baseline time: local time {local_dt.strftime('%H:%M')} is in active window (9 AM - 7 PM)")
+    else:
+        # Outside daytime window, adjust to optimized target hour (lunchtime/peak)
+        opt_local_total_minutes = int((opt_hour_utc * 60) + (offset * 60)) % 1440
+        opt_hour_local = opt_local_total_minutes // 60
+        opt_minute_local = opt_local_total_minutes % 60
+
+        if local_dt.hour < 9:
+            # Too early in the morning, schedule for today at opt hour
+            target_local_dt = local_dt.replace(
+                hour=opt_hour_local, minute=opt_minute_local, second=0, microsecond=0
+            )
+            print(f"[Scheduling] Shifting forward to peak local time {opt_hour_local:02d}:{opt_minute_local:02d} today")
+        else:
+            # Too late in the evening/night, schedule for tomorrow at opt hour
+            tomorrow_local = local_dt + timedelta(days=1)
+            target_local_dt = tomorrow_local.replace(
+                hour=opt_hour_local, minute=opt_minute_local, second=0, microsecond=0
+            )
+            print(f"[Scheduling] Shifting forward to peak local time {opt_hour_local:02d}:{opt_minute_local:02d} tomorrow")
+
+    # Add a small random jitter (0 to 30 minutes)
+    jitter_minutes = random.randint(0, 30)
+    target_local_dt += timedelta(minutes=jitter_minutes)
+
+    # Convert back to UTC
+    target_dt = target_local_dt - timedelta(hours=offset)
+
+    # Safety guard: ensure we never schedule in the past
     if target_dt < baseline_dt:
         target_dt += timedelta(days=1)
 
-    print(f"[Scheduling] Geo-Targeted scheduling for target country '{country}': "
-          f"Baseline: {baseline_time_str} | Scheduled: {target_dt.isoformat().replace('+00:00', 'Z')} (Hour: {opt_hour_utc} UTC + {jitter_minutes}m jitter)")
+    print(f"[Scheduling] Geo-Targeted scheduling for country '{country}': "
+          f"Baseline: {baseline_time_str} | Scheduled: {target_dt.isoformat().replace('+00:00', 'Z')} "
+          f"(Local: {target_local_dt.strftime('%Y-%m-%d %H:%M:%S')} | Offset: {offset:+.1f}h)")
 
     return target_dt.isoformat().replace("+00:00", "Z")
 
