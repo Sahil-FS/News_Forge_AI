@@ -1,12 +1,12 @@
 # 🎬 AI Video Review Report
 
-> **Generated:** 2026-05-17 13:49:30  
+> **Generated:** 2026-05-26 17:31:02  
 > **Executed:** `.venv\Scripts\python.exe main.py`  
 > **FORCE_REFRESH:** 1 (new images fetched)  
 > **Pipeline status:** ✅ SUCCESS  
-> **Pipeline runtime:** 1167.7s  
+> **Pipeline runtime:** 4734.4s  
 > **Article:** N/A  
-> **Context detected:** `tense`
+> **Context detected:** `informative`
 
 > WARNING:️ **EXECUTION MISMATCH DETECTED** -- see Issues section
 
@@ -14,20 +14,20 @@
 
 ## 🎯 Summary Score
 
-### Overall: **7.0/10** -- 🚨 BAD
+### Overall: **9.1/10** -- ✅ GOOD
 
-[██████████████░░░░░░] 7.0/10
+[██████████████████░░] 9.1/10
 
 | Dimension | Score | Bar | Grade |
 |-----------|-------|-----|-------|
-| Script Quality | 6.5/10 | [████████░░░░] 6.5/10 | ✅ GOOD |
-| Video Length | 4.5/10 | [█████░░░░░░░] 4.5/10 | ✅ GOOD |
-| Scene Distribution | 6.0/10 | [███████░░░░░] 6.0/10 | ✅ GOOD |
-| Caption Quality | 8.8/10 | [███████████░] 8.8/10 | ✅ GOOD |
+| Script Quality | 6.9/10 | [████████░░░░] 6.9/10 | ✅ GOOD |
+| Video Length | 10.0/10 | [████████████] 10.0/10 | ✅ GOOD |
+| Scene Distribution | 10.0/10 | [████████████] 10.0/10 | ✅ GOOD |
+| Caption Quality | 8.5/10 | [██████████░░] 8.5/10 | ✅ GOOD |
 | Caption Timing | 10.0/10 | [████████████] 10.0/10 | ✅ GOOD |
-| Image Relevance | 9.0/10 | [███████████░] 9.0/10 | ✅ GOOD |
-| Visual Flow | 7.6/10 | [█████████░░░] 7.6/10 | ✅ GOOD |
-| Pacing | 6.4/10 | [████████░░░░] 6.4/10 | ✅ GOOD |
+| Image Relevance | 9.5/10 | [███████████░] 9.5/10 | ✅ GOOD |
+| Visual Flow | 10.0/10 | [████████████] 10.0/10 | ✅ GOOD |
+| Pacing | 10.0/10 | [████████████] 10.0/10 | ✅ GOOD |
 
 ---
 
@@ -36,23 +36,23 @@
 | Property | Value |
 |----------|-------|
 | Path | `output/news_video.mp4` |
-| Size | 2.99 MB |
-| Modified | 2026-05-17 13:49:27 |
+| Size | 7.41 MB |
+| Modified | 2026-05-26 16:39:38 |
 | Belongs to this run | ✅ YES |
-| **Duration (MoviePy)** | **32.57s** |
+| **Duration (MoviePy)** | **41.13s** |
 | Target duration | 45–55s |
-| Duration status | 🚨 OFF TARGET |
+| Duration status | ✅ On target |
 
 ---
 
 ## 📝 Script Review
 
-**Context / Tone detected:** `tense`
+**Context / Tone detected:** `informative`
 
 | Sub-dimension | Score | Bar |
 |---------------|-------|-----|
 | Hook strength | 7.0/10 | [████████░░░░] 7.0/10 |
-| Story flow | 5.0/10 | [██████░░░░░░] 5.0/10 |
+| Story flow | 6.5/10 | [████████░░░░] 6.5/10 |
 | Tone match | 5.0/10 | [██████░░░░░░] 5.0/10 |
 | Repetition/filler | 9.0/10 | [███████████░] 9.0/10 |
 
@@ -62,48 +62,43 @@
 
 | Metric | Value |
 |--------|-------|
-| Video duration (MoviePy) | **32.57s** |
-| Total scenes | 3 |
-| Avg scene duration | 7.3s |
-| Avg words / scene | 12.3 |
-| Images OK | 3 |
+| Video duration (MoviePy) | **41.13s** |
+| Total scenes | 7 |
+| Avg scene duration | 5.2s |
+| Avg words / scene | 8.9 |
+| Images OK | 7 |
 | Images missing | 0 |
 
 ### Per-Scene Breakdown
 
 | # | Type | Keyword | Words | Audio | Image | Text Preview |
 |---|------|---------|-------|-------|-------|--------------|
-| 1 | war | Iran Zawtar al-Sharqiyah iran war day tehran news event realistic breaking news dramatic real photo | 13 | 7.7s | ✅ | Iran war day 79: Tehran to unveil Hormuz toll plan… |
-| 2 | general | Iran Zawtar al-Sharqiyah iran says will soon news event realistic | 12 | 5.6s | ✅ | Iran says it will soon reveal the plan as Trump wa… |
-| 3 | general | Iran Zawtar al-Sharqiyah will bad time deal news event realistic | 12 | 8.7s | ✅ | It will have a &#039;very bad time&#039; if deal n… |
+| 1 | general | India  israel bets big tech news event realistic breaking news dramatic real photo | 10 | 4.7s | ✅ | Israel Bets On Big Tech Over Warfronts, Has An Ira… |
+| 2 | general | India  israeli officials expect india news event realistic | 9 | 5.6s | ✅ | Request For India. Israeli officials expect India … |
+| 3 | general | India  classify irgc terrorist outfit news event realistic | 7 | 4.5s | ✅ | Classify the IRGC as a terrorist outfit. |
+| 4 | general | India  drones missiles also appeared news event realistic | 8 | 5.0s | ✅ | Drones or missiles also appeared to target Azerbai… |
+| 5 | war | India  turkey britain akrotiri military news event realistic | 8 | 5.2s | ✅ | Turkey, and Britain's Akrotiri military base on Cy… |
+| 6 | war | India  conflict between hezbollah israel news event realistic | 11 | 6.8s | ✅ | The conflict between Hezbollah and Israel escalate… |
+| 7 | war | India  war killing civilians militants news event realistic | 9 | 4.9s | ✅ | War, killing more than 2, 000 civilians and milita… |
 
 ---
 
 ## 🚨 Issues Detected
 
-- [EXECUTION MISMATCH] Duration 32.57s is outside expected range (45.0–55.0s)
-- [VIDEO TOO SHORT] 32.57s -- target 45–55s.
-- [CAPTION TOO LONG] Scene 1: 13 words -- will overflow.
-- [STATIC SCENE] Scene 1: 7.7s single image -- boring.
-- [SCENE TOO LONG] Scene 1: 7.7s -- loses attention.
-- [STATIC SCENE] Scene 3: 8.7s single image -- boring.
-- [SCENE TOO LONG] Scene 3: 8.7s -- loses attention.
+- [EXECUTION MISMATCH] Duration 41.13s is outside expected range (45.0–55.0s)
+- [STATIC SCENE] Scene 6: 6.8s single image -- boring.
 
 ---
 
 ## 💡 Recommendations (Actionable)
 
-- **DURATION: Video is too short. Raise NUM_SENTENCES to 8 in config.py and lower MIN_WORDS to 50 in script_generator.py to force expansion.**
-- **SCENES: Only 3 scenes. Increase NUM_SENTENCES=8 in config.py. Add a guard in main.py: if len(scenes) < 4: abort and re-run.**
 - **FLOW: Narrow script. Ensure generate_ending() appends its closing line and _trim_script() does not remove it (uses pop(-2) -- should be safe).**
-- **CAPTIONS: Scenes [1] exceed 12 words. Split each sentence at 'and'/'but'/'which' in the script before scene_planner.**
-- **PACING: Scene lengths are inconsistent. Split long-audio sentences and merge very-short ones for uniform rhythm.**
 
 ---
 
 ## WARNING:️ Execution Mismatch Detail
 
-- Duration 32.57s is outside expected range (45.0–55.0s)
+- Duration 41.13s is outside expected range (45.0–55.0s)
 
 ---
 

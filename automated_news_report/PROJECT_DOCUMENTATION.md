@@ -56,53 +56,48 @@ Create **zero-manual-editing news videos** that:
 # 2. FULL FOLDER STRUCTURE
 
 ```
-AI_NEWS_GENERATOR/
+automated_news_report/
 │
-├── 📄 main.py                          # Orchestrator — runs the full pipeline
-├── 📄 config.py                        # Central configuration file
-├── 📄 news_fetcher.py                  # Fetch latest BBC news via RSS
-├── 📄 script_generator.py              # Generate news script using spaCy + Ollama
-├── 📄 scene_planner.py                 # Split script into scenes + extract context
-├── 📄 image_fetcher.py                 # Fetch images from Pexels / Wikipedia
-├── 📄 voice_generator.py               # Generate audio with Piper TTS
-├── 📄 video_builder.py                 # Assemble final video with MoviePy
-├── 📄 video_review.py                  # Quality analysis & metrics
-├── 📄 README.md                        # Setup & usage guide
-├── 📄 PROJECT_DOCUMENTATION.md         # This file (detailed architecture)
-├── 📄 VIDEO_QUALITY_ANALYSIS_REPORT.md # Auto-generated review metrics
+├── 📄 main.py                          # Master orchestrator for both formats
+├── 📄 config.py                        # Centralized settings & branding parameters
+├── 📄 news_fetcher.py                  # RSS parser & premium editorial scraper
+├── 📄 script_generator.py              # Ollama script engine (short-form)
+├── 📄 long_form_script_generator.py    # Structured script engine (long-form)
+├── 📄 scene_planner.py                 # Sentence chunker & spaCy NER context extractor
+├── 📄 image_fetcher.py                 # Priority 0 scraping, Pexels API, and PIL card generator
+├── 📄 voice_generator.py               # Kokoro TTS (Primary) & Piper (Fallback) generator
+├── 📄 video_builder.py                 # Renders short-form vertical (9:16) MP4
+├── 📄 long_form_video_builder.py       # Renders long-form landscape (16:9) MP4
+├── 📄 ui_server.py                     # Web console dashboard server (Flask)
+├── 📄 db_manager.py                    # SQLite database coordinator
+├── 📄 db.sqlite                        # Tracking DB for processed articles and stats
+├── 📄 channel_profiles.py              # Voice and identity profiles per channel
+├── 📄 chapter_generator.py             # YouTube chapter segmentation generator
+├── 📄 thumbnail_generator.py           # Programmatic overlay image builder (PIL)
+├── 📄 analytics_puller.py              # YouTube analytics retrieval client
+├── 📄 sync_analytics.py                # Pulls and syncs channel statistics to DB
+├── 📄 youtube_uploader.py              # YouTube Data API upload pipeline
+├── 📄 video_review.py                  # Pipeline execution validator and reviewer
+├── 📄 README.md                        # Primary setup & instruction manual
+├── 📄 PROJECT_DOCUMENTATION.md         # Detailed system design specs (This file)
+├── 📄 VIDEO_QUALITY_ANALYSIS_REPORT.md # Auto-generated execution report
 │
-├── 🗂️ piper/                          # TTS Engine (offline)
-│   ├── piper.exe                       # Windows Piper binary (included)
-│   ├── en_US-lessac-medium.onnx        # Voice model (60.27 MB)
-│   ├── en_US-lessac-medium.onnx.json   # Model metadata
-│   ├── espeak-ng-data/                 # Phonetic data (multilingual)
-│   │   ├── af_dict, am_dict, ...       # Language dictionaries (148 languages)
-│   │   ├── lang/                       # Language definitions
-│   │   ├── voices/                     # Voice profiles
-│   │   └── phondata                    # Phonetic mapping tables
-│   ├── libtashkeel_model.ort           # Arabic text normalization
-│   ├── onnxruntime.dll                 # ONNX runtime (inference)
-│   └── piper_phonemize.dll             # Phoneme converter
+├── 🗂️ piper/                          # Fallback TTS Engine files
+│   ├── piper.exe                       # Piper compiler binary
+│   ├── en_US-lessac-medium.onnx        # Medium voice model
+│   └── en_US-lessac-medium.onnx.json   # Voice configuration file
 │
-├── 🗂️ output/                         # Generated assets (auto-created)
+├── 🗂️ templates/                      # Web UI template views (HTML)
+├── 🗂️ assets/                         # Branding images, logo resources, and placeholders
+│
+├── 🗂️ output/                         # Auto-generated assets directory
 │   ├── audio/                          # Scene audio files (WAVs)
-│   │   ├── scene_00_HASH.wav           # Scene 0 audio
-│   │   ├── scene_01_HASH.wav           # Scene 1 audio
-│   │   └── ... (one per scene)
-│   ├── images/                         # Scene images (JPEGs)
-│   │   ├── scene_00.jpg                # Scene 0 background image
-│   │   ├── scene_01.jpg                # Scene 1 background image
-│   │   └── ... (one per scene)
-│   ├── news_video.mp4                  # Final output video ⭐
-│   ├── news_video_ambient.wav          # Ambient audio mix (unused)
-│   └── news_video_tmp_audio.m4a        # Temporary audio (cleanup)
+│   ├── images/                         # Scraped images and PIL neon cards
+│   ├── news_video.mp4                  # Final rendered vertical video (9:16)
+│   └── news_video_long.mp4             # Final rendered landscape video (16:9)
 │
-├── 🗂️ .git/                           # Git repository (GitHub sync)
-├── 🗂️ .venv/                          # Python virtual environment
-│
-├── 📝 execution.log                    # Pipeline execution logs
-└── 📝 test.wav                         # Voice test output
-
+├── 🗂️ .venv/                          # Local Python virtual environment
+└── 📝 execution.log                    # System activity logs
 ```
 
 ---
@@ -341,8 +336,19 @@ Instead of feeding a single static prompt to the LLM, the system dynamically swa
     7.  **Next Steps:** Immediate roadmap or upcoming developments.
     8.  **Close:** Future potential or global impact.
 
+### Structured Citation Tagging & Speech Sanitization
+- **Narrative Evidence Layering:** Scripts generated by both the short-form and long-form engines include explicit evidence-based citation markers to ground statements.
+- **Support Tags:**
+  - `[QUOTE: "text"]`: Highlights direct spoken testimonies.
+  - `[TWEET: "user: text"]`: Highlights public statements, tweets, or social posts.
+  - `[DOCUMENT: "fact"]`: Highlights official documents, agreements, or legal filings.
+- **Narrative Reading Translation (`main.py`):**
+  - Before voiceover generation, regex rules clean these brackets so that Kokoro/Piper read them naturally.
+  - For `QUOTE` and `DOCUMENT`, the brackets are removed and only the text is spoken (the card provides the visual context).
+  - For `TWEET`, the voiceover translates it into standard speech: `According to [user], [text]`.
+
 ### Word Count & Validation Controls
-- **Target Word Range:** 120 to 162 words (at 2.5 words per second, this populates a 48–65s video).
+- **Target Word Range:** 120 to 162 words for short-form (vertical), 200–300 words for long-form (landscape).
 - **LLM Safety Guard:** If the source article is under 300 characters, Ollama is bypassed completely. The pipeline jumps straight to spaCy extractive fallback to prevent severe LLM hallucinations on sparse information.
 - **Filler Rejection:** If the script contains 2 or more generic cliches (e.g. *"serves as a reminder"*, *"underscores the importance"*, *"only time will tell"*), the script is rejected and Ollama regenerates.
 
@@ -578,29 +584,44 @@ Resolve and download **exactly one high-quality portrait (9:16) image** for each
 *   **Mechanism:** Geographic geocoding and CartoDB base tile compilation are extremely rate-limit sensitive.
 *   **Lock:** If a previously compiled map stinger exists at `output/images/map_stinger.jpg` on the current run, the geocoding step (`geopy` and `staticmap`) is locked and skipped. The pipeline loads the local map directly, preventing Nominatim geocoding bans and slashing scene planning delays to 0ms.
 
-### 7-Tier Image Priority Hierarchy
+### Image Priority Hierarchy & Specialized Engines
 
-To maintain maximum visual realism and journalistic integrity, the fetcher tries assets in the following strict order, moving to the next tier only if the previous one fails or returns no results:
+To maintain visual realism, credibility, and long-term retention, the fetcher utilizes a multi-layered procurement stack:
 
+#### 1. Programmatic PIL Evidence Graphics (`generate_evidence_graphic`)
+- For scenes containing structured citation tags (`quote_card`, `tweet_overlay`, or `evidence_graphic`), the fetcher **bypasses standard search APIs entirely**.
+- It programmatically draws a dark, neon-accented card overlay directly onto a solid dark background image:
+  - **Quote Cards:** Draws a left-aligned red stripe, quotation mark icon, wrapped quote body, and speaker attribution.
+  - **Tweet Overlays:** Draws a Twitter/X card style layout with user profiles, handles, tweet content, and date stamps.
+  - **Evidence Graphics:** Draws fact-highlight lists or data sheets for document citations.
+- This maintains visual consistency across news commentaries and solves the problem of finding generic stock cliparts for highly specific quotes.
+
+#### 2. Article-Level Editorial Scraping (Priority 0)
+- Before calling generic APIs, the scraper (`scrape_editorial_image`) hits the article URL directly with custom headers.
+- It parses `og:image` and `twitter:image` tags to download the exact editorial hero image used by the news publisher, guaranteeing the highest fact-relevance.
+
+#### 3. General 7-Tier Hierarchy
+If the scene is a general narration scene (not a citation card) and Priority 0 scraper returns nothing, it falls back through:
 ```
-[START FETCH IMAGE]
-        ↓
-[Tier 0.5: Scraping Inline Media] ── (Article's actual inline media) ──→ [SUCCESS]
-        ↓ (fail/none)
-[Tier 1.0: Wiki Person Portrait] ─── (Verified image of GPE/PERSON) ───→ [SUCCESS]
-        ↓ (fail/none)
-[Tier 1.5: Pexels Portait Photo] ─── (Real portrait news photo) ───────→ [SUCCESS]
-        ↓ (fail/none)
-[Tier 2.0: Wikipedia Topic / DDG] ── (Topic or DDG image search) ──────→ [SUCCESS]
-        ↓ (fail/none)
-[Tier 3.0: Unsplash Photo] ───────── (Clean stock landscape/portrait) ──→ [SUCCESS]
-        ↓ (fail/none)
-[Tier 5.5: Pollinations Context AI] ─ (AI news-photo prompt gen) ──────→ [SUCCESS]
-        ↓ (fail/none)
-[Tier 6.0: Generic Context AI] ───── (Generic category AI graphic) ─────→ [SUCCESS]
-        ↓ (fail/none)
-[Tier 7.0: Solid Dark Fallback] ──── (1080x1920 solid blue-grey color) → [SUCCESS]
+[START GENERAL SEARCH]
+         ↓
+[Tier 1: Wiki Person Portrait] ─── (Matches named PERSON entity from NER) ─→ [SUCCESS]
+         ↓ (fail/none)
+[Tier 2: Pexels News Photo] ────── (Realistic landscape/portrait photo) ──→ [SUCCESS]
+         ↓ (fail/none)
+[Tier 3: Wikimedia Topic Search] ─ (Matches specific ORG or GPE entity) ─→ [SUCCESS]
+         ↓ (fail/none)
+[Tier 4: Unsplash Stock Photo] ─── (Broad stock photo query matching key) → [SUCCESS]
+         ↓ (fail/none)
+[Tier 5: Pollinations AI Photo] ── (Generates photojournalistic image) ───→ [SUCCESS]
+         ↓ (fail/none)
+[Tier 6: Solid Dark Fallback] ──── (1080x1920 solid blue-grey color) ─────→ [SUCCESS]
 ```
+
+#### 4. Anti-Stock Drift & AI Realism Prompts
+- **Illustration Filter:** Custom rejection regex matches image URLs containing illustration, drawing, clipart, vectors, 3D, rendering, or models.
+- **AI Prompt Tuning:** When Pollinations.ai is triggered as a fallback, it appends strict photojournalism anchors to prompts (e.g. `"... photojournalistic press photo, realistic details, news broadcast capture, taken on dslr 35mm lens, no rendering, no CGI"`) to prevent stock-looking artificial drawings.
+
 
 ### Query Boosting & Journalistic Suffixes
 
@@ -672,11 +693,10 @@ A voice pool containing premium American and British neural voices is maintained
 - *Fallback Roulette:* Rotates between all pool voices deterministically based on the current day of the year (`date.today().tm_yday`), providing narrative variety across pipeline runs.
 
 #### B. Speed Scale Map
-Speech rates are adjusted dynamically to fit the gravity and urgency of the topic:
-- `tense` / `serious` / `disaster` / `war` $\rightarrow$ **1.05x speed** (Slower, deliberate pacing to convey gravity and serious crisis details).
-- `politics` $\rightarrow$ **1.08x speed** (Medium pacing for political summits and official reactions).
-- `business` / `informative` / `neutral` $\rightarrow$ **1.10x speed** (Normal swift pacing for technology launches).
-- `positive` $\rightarrow$ **1.12x speed** (Brighter, energetic pacing for victories and breakthroughs).
+Speech rates are adjusted dynamically to optimize user retention and fit the gravity of the topic:
+- **Default categories:** Forced to **1.22x speed** to ensure fast-paced, modern news delivery.
+- **Verdict / Serious segment scenes:** Decelerated to **0.90x speed** to preserve gravity, weight, and dramatic impact during final announcements.
+- Fallback engines (Piper) map to default length scales matching the active voice settings.
 
 ### Post-Processing & Audio Engineering
 
@@ -786,6 +806,12 @@ To keep the visual presentation dynamic and high-engagement:
 *   **Attribution:** Resolves country contexts using whole-word NLP matches (e.g. Gaza, Israel, Ukraine, Taiwan).
 *   **Drawing:** Geocodes regional coordinates with `geopy` and compiles a beautiful static map using CartoDB satellite or dark tiles. 
 *   **Placement:** Injected as a 2.5-second top corner overlay to establish location context instantly.
+
+#### 4. Dynamic Background Music Ducking
+*   To create a highly premium, broadcast-quality audio experience, background music is programmatically ducked when key evidence overlays are displayed.
+*   **Segment Mapping:** At timeline composition time, the builder maps the start and end timestamps of all scenes assigned with a citation type (`quote_card`, `tweet_overlay`, or `evidence_graphic`).
+*   **Vector Volume Filter:** A MoviePy audio volume filter function `.fl(filter_fn)` is applied to the background music track. The filter maps timestamps `t` (supporting both float values and NumPy arrays) and automatically scales the music volume down from default levels (`0.12`) to a near-silent level (`0.025`) during these segments.
+*   **Pacing Effect:** This emphasizes primary source evidence cards and replicates the professional audio pacing of premium high-retention commentary networks.
 
 ### Scene Rendering Algorithm
 
@@ -1169,7 +1195,84 @@ Duration: 51.2 seconds (target: 45–55s)
 ## Issues: None detected
 ```
 
+## 3.11 **long_form_script_generator.py** — Deep-Dive Narrative Script Engine
+
+### Purpose
+Generates high-retention, detailed news narration scripts for landscape (16:9) formats.
+- **Word Range:** 200–300 words, structured to fit a 2-to-3 minute video target.
+- **5-Layer Architecture:**
+  1. **Hook:** A high-impact opening question or major statement.
+  2. **Context:** Deeper background explaining how the situation escalated.
+  3. **Evidence:** Direct primary source citations inside special bracket tags (e.g. `[QUOTE: "..."]`, `[TWEET: "..."]`, or `[DOCUMENT: "..."]`).
+  4. **Analysis:** Explaining secondary statistics, analytics, or counter-arguments.
+  5. **Impact / Outro:** The final verdict, stakes, or call to action.
+
 ---
+
+## 3.12 **long_form_video_builder.py** — Landscape (16:9) Video Compositor
+
+### Purpose
+Composes landscape-format H.264 / AAC MP4 videos at 1920×1080 resolution.
+- **Dynamic Audio Ducking:** Implements moviepy custom vectorized filter `.fl()` mappings. When an evidence-tagged scene (e.g. a quote or tweet card) is active, the engine ducks the background music volume from normal levels (`0.12`) to a near-silent level (`0.025`) to increase speech intelligibility.
+- **Layout Layers:**
+  - Layer 1: Background image with soft Gaussian blur (0.8 radius) and Ken Burns pan/zoom.
+  - Layer 2: Main visual card or programmatic quote card layout.
+  - Layer 3: Geographic static map stinger (CartoDB dark/light tiles overlay).
+  - Layer 4: Lower-third crawling ticker presenting article headline, source, and locations.
+  - Layer 5: Subtitle overlays (word-by-word gold active word highlighting).
+  - Layer 6: Brand overlay bar and logo.
+
+---
+
+## 3.13 **ui_server.py** — Local Web Control Dashboard
+
+### Purpose
+Runs a local Flask-based web application to orchestrate, customize, and review pipeline runs.
+- **Dashboard Interface:** Provides forms to choose format (vertical/landscape/both), category, and channel profiles.
+- **Real-Time Logs:** Streams console output of ongoing generation tasks using Server-Sent Events (SSE).
+- **Execution Manager:** Spawns runs in background thread workers and stores statuses.
+- **Video Player:** Lists past renders and serves output MP4s, logs, and generated quality reports.
+
+---
+
+## 3.14 **db_manager.py** — Database Interface & Schema
+
+### Purpose
+Manages connections to the local SQLite database (`db.sqlite`).
+- **Tables Managed:**
+  - `articles`: Track processed RSS news links to avoid duplicate reports.
+  - `videos`: Store metadata of successful runs, duration, and output paths.
+  - `analytics`: Maintain channel statistics (views, impressions, subscribers) synced from API reports.
+
+---
+
+## 3.15 **channel_profiles.py** — Identity Settings
+
+### Purpose
+Encapsulates brand identity properties.
+- **Profiles:** Maps channels (`newscup`, `newscup_india`) to customized voice accents, speech speeds (Default Kokoro 1.22x speed pacing, verdict 0.90x speed), logos, color palettes, and outro scripts.
+
+---
+
+## 3.16 **youtube_uploader.py** — Automatic YouTube Publisher
+
+### Purpose
+Coordinates automated API publishing of completed MP4 clips.
+- **Data API v3:** Authenticates via local client secrets (`client_secrets_newscup.json`) and token caches.
+- **Automation:** Uploads to the correct channel, attaches title, tags, description templates, sets category ID to `25` (News & Politics), and defaults to "private" mode for moderator review.
+
+---
+
+## 3.17 **thumbnail_generator.py** — Cover Graphics Engine
+
+### Purpose
+Draws horizontal (1280×720) and vertical (1080×1920) cover thumbnails.
+- Composites scene images with heavy black-to-transparent overlays.
+- Draws large high-contrast text layers with borders and drop-shadows.
+- Places brand logos and red border frames.
+
+---
+
 
 # 4. END-TO-END DATA FLOW
 

@@ -4,3 +4,19 @@ __pycache__/
 output/
 *.pyc
 *.pyo
+
+# Exclude local database files
+db.sqlite
+db.sqlite-journal
+
+# Exclude local scratch files and temporary test scripts/plans
+scratch_debug_plan.py
+scratch_test.py
+scratch_ollama_hindi.txt
+scratch_ollama_hindi_long.txt
+*.mp4
+output_test/
+
+# Exclude secrets and credentials tokens
+client_secrets*.json
+token*.json

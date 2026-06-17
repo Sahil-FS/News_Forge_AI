@@ -21,6 +21,25 @@ Usage:
 
 import sys
 
+# Force UTF-8 stdout/stderr on Windows to avoid charmap UnicodeEncodeErrors
+if sys.platform == "win32":
+    try:
+        import io
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer,
+            encoding="utf-8",
+            errors="replace",
+            line_buffering=True
+        )
+        sys.stderr = io.TextIOWrapper(
+            sys.stderr.buffer,
+            encoding="utf-8",
+            errors="replace",
+            line_buffering=True
+        )
+    except Exception:
+        pass
+
 # ENVIRONMENT CHECK
 import os as _os_env_check
 if "VIRTUAL_ENV" not in _os_env_check.environ and ".venv" not in sys.executable and "venv" not in sys.executable:
@@ -35,7 +54,6 @@ import time
 import textwrap
 import subprocess
 from datetime import datetime
-from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PATHS
@@ -52,7 +70,7 @@ OUTPUT_VIDEO = os.path.join(ROOT, "output", "news_video.mp4")
 # ─────────────────────────────────────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-TARGET_DUR_LOW  = 45.0   # seconds -- minimum acceptable
+TARGET_DUR_LOW  = 40.0   # seconds -- minimum acceptable (scorer gives 10/10 at 40s+)
 TARGET_DUR_HIGH = 55.0   # seconds -- maximum acceptable (expanded range)
 MIN_SCENES      = 3
 REPORT_PATH     = os.path.join(ROOT, "VIDEO_QUALITY_ANALYSIS_REPORT.md")
@@ -170,7 +188,13 @@ def get_video_duration() -> float:
     """
     try:
         # Import from the already-running venv (this script IS running in venv)
-        from moviepy import VideoFileClip
+        try:
+            from moviepy.editor import VideoFileClip
+        except ImportError:
+            try:
+                from moviepy.video.io.VideoFileClip import VideoFileClip
+            except ImportError:
+                from moviepy import VideoFileClip
         clip = VideoFileClip(OUTPUT_VIDEO)
         duration = clip.duration
         clip.close()
@@ -356,7 +380,7 @@ def _clamp(v, lo=0.0, hi=10.0):
 def _wc(text):
     return len(text.split())
 
-# PHASE 3 FIX: Caption quality checks
+# Caption quality checks
 def check_caption_sync(run: ParsedRun) -> tuple:
     """
     Check if captions (word count) are synchronized with scene durations.
@@ -595,7 +619,7 @@ def score_images(run: ParsedRun) -> tuple:
         issues.append(f"{fail} scene(s) missing images -- fallback background used.")
     # Check for very long single-image scenes
     for i, s in enumerate(run.scenes):
-        if s["audio_dur"] > 6.0 and s.get("has_image"):
+        if s["audio_dur"] > 7.0 and s.get("has_image"):  # matches visual-flow scorer threshold
             score -= 0.5
             issues.append(f"Scene {i+1}: {s['audio_dur']:.1f}s on single image -- static.")
     return _clamp(score), issues

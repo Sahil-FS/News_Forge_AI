@@ -6,62 +6,79 @@ import hashlib
 import io
 import re
 
-from config import PIPER_EXECUTABLE, PIPER_MODEL, AUDIO_DIR
+from config import (
+    PIPER_EXECUTABLE, PIPER_MODEL, AUDIO_DIR,
+    KOKORO_SAMPLE_RATE, KOKORO_LEAD_SILENCE_MS,
+    SILENCE_DB_THRESHOLD, SILENCE_KEEP_TAIL_SECS,
+    SILENCE_MIN_TRIM_SECS, SILENCE_MIN_AUDIO_SECS,
+    PIPER_LENGTH_SCALE_EN, PIPER_LENGTH_SCALE_HI,
+)
 
-import hashlib as _hashlib
 import datetime as _datetime
 
-# ── Voice roulette - alternates narrator per run ──────────────────────
-# Uses the current date's day-of-year as a deterministic toggle so
-# every run on a new day gets a different voice, and all scenes within
-# one run use the same voice (consistent narration per video).
-#
-# Kokoro voice codes:
-#   af_nova   - professional American female (neutral authority)
-#   am_adam   - professional American male   (firm authority)
-#   af_sarah  - warm American female         (human interest)
-#   bm_george - British male                 (BBC-style gravitas)
-#
-# If Kokoro is not installed these values are ignored and Piper is used.
-_VOICE_POOL = ["af_nova", "am_adam", "af_sarah", "bm_george"]
-_RUN_VOICE  = _VOICE_POOL[_datetime.date.today().timetuple().tm_yday
-                           % len(_VOICE_POOL)]
+import datetime as _dt
+from pathlib import Path
 
-# ── Context-aware voice and speed selection ────────────────────────────
-# Phase 9: authoritative voices for hard news, warm for human interest.
-# Speed range: 1.00 (deliberate/authoritative) to 1.10 (energetic).
-_AUTHORITATIVE_VOICE = "bm_george"   # BBC-style gravitas for hard news
-_WARM_VOICE          = "af_nova"     # Warm professional female for softer stories
-_FALLBACK_VOICE      = _RUN_VOICE    # Day-of-year rotation as fallback
-
-_CONTEXT_VOICE_MAP = {
-    "war":         "am_adam",       # firm male voice for conflict coverage
-    "tense":       "bm_george",     # BBC gravitas for tense situations
-    "disaster":    "bm_george",     # authoritative for emergencies
-    "politics":    "am_adam",       # firm authority for political coverage
-    "serious":     "bm_george",     # BBC gravitas for serious topics
-    "positive":    "af_sarah",      # warm for good news
-    "business":    "af_nova",       # professional neutral for business
-    "informative": "af_nova",       # professional neutral for tech/science
-    "neutral":     _FALLBACK_VOICE, # day-rotation for neutral
-    "general":     _FALLBACK_VOICE, # day-rotation for general
+# Three distinct voice profiles — one per format
+_FORMAT_VOICES = {
+    "briefing": {
+        # Rotate through these weekly for Format 1
+        "monday":    ("bm_george", 1.05),   # British male, serious
+        "tuesday":   ("am_adam",   1.08),   # American male, authoritative
+        "wednesday": ("bm_george", 1.05),
+        "thursday":  ("af_nova",   1.10),   # American female, professional
+        "friday":    ("am_adam",   1.08),
+        "saturday":  ("af_sarah",  1.12),   # Warm female, weekend feel
+        "sunday":    ("bm_george", 1.05),
+    },
+    "context": {
+        # Explainer format always uses female voice — creates contrast
+        "default": ("af_nova", 0.95),
+    },
+    "tracker": {
+        # Tracker format uses consistent voice per tracked story
+        "default": ("am_adam", 1.00),
+    }
 }
 
-# Dynamic speed: slower for authoritative hard news, faster for positive/business
-_CONTEXT_SPEED_MAP = {
-    "war":         1.05,   # deliberate pace for conflict
-    "tense":       1.05,   # deliberate for tense
-    "disaster":    1.05,   # clear and calm for emergencies
-    "politics":    1.08,   # slight urgency for political
-    "serious":     1.05,   # measured for serious
-    "positive":    1.12,   # energetic for good news
-    "business":    1.10,   # brisk for business
-    "informative": 1.10,   # normal for informative
-    "neutral":     1.10,   # standard
-    "general":     1.10,   # standard
-}
+def get_voice_for_format(
+    fmt: str = "briefing",
+    context: str = "neutral"
+) -> tuple[str, float]:
+    """
+    Get voice and speed for the given format and story context.
+    Uses format-aware rotation to ensure variety across uploads.
+    """
+    day_name = _dt.date.today().strftime("%A").lower()
+    
+    if fmt == "briefing":
+        schedule = _FORMAT_VOICES["briefing"]
+        base_voice, base_speed = schedule.get(
+            day_name, ("bm_george", 1.05)
+        )
+    elif fmt == "context":
+        base_voice, base_speed = _FORMAT_VOICES["context"]["default"]
+    else:  # tracker
+        base_voice, base_speed = _FORMAT_VOICES["tracker"]["default"]
+    
+    # Override speed based on story gravity
+    context_speed_override = {
+        "war":         0.95,
+        "tense":       0.95,
+        "disaster":    0.98,
+        "serious":     0.98,
+        "politics":    1.00,
+        "business":    1.05,
+        "positive":    1.10,
+        "informative": 1.05,
+    }
+    
+    final_speed = context_speed_override.get(context, base_speed)
+    return base_voice, final_speed
 
-print(f"[VoiceGen] Run voice: '{_RUN_VOICE}' (context-aware override available)")
+# Legacy compat variables
+_RUN_VOICE = "bm_george"
+print(f"[VoiceGen] Scheduled voice system loaded successfully")
 
 # To enable Kokoro TTS (better voice quality, same ONNX-based offline execution):
 # pip install kokoro>=0.9.4 soundfile
@@ -72,8 +89,8 @@ _KOKORO_FAIL_REASON = ""
 
 try:
     from kokoro import KPipeline
-    import soundfile as _sf_test
-    import numpy as _np_test
+    import soundfile
+    import numpy
     KOKORO_AVAILABLE = True
     print("[VoiceGen] Kokoro TTS: AVAILABLE")
 except ImportError as _ke:
@@ -124,7 +141,7 @@ def _get_kokoro_pipeline():
     return _kokoro_pipeline
 
 
-def generate_audio_kokoro(text, wav_path, context: str = "neutral") -> bool:
+def generate_audio_kokoro(text, wav_path, context: str = "neutral", voice: str = None, speed: float = None, is_paragraph_end: bool = False, is_verdict: bool = False) -> bool:
     """
     Generate audio via Kokoro TTS with context-aware voice and speed selection.
     """
@@ -136,9 +153,16 @@ def generate_audio_kokoro(text, wav_path, context: str = "neutral") -> bool:
         import numpy as np
         import soundfile as sf
 
-        # Select voice and speed based on story context
-        voice = _CONTEXT_VOICE_MAP.get(context, _RUN_VOICE)
-        speed = _CONTEXT_SPEED_MAP.get(context, 1.05)
+        # Force baseline speed to 1.22 for English news broadcast to avoid slow audiobook pacing
+        speed = 1.22
+        if voice is None:
+            v_default, _ = get_voice_for_format("briefing", context)
+            voice = v_default
+
+        if is_verdict:
+            speed = 0.90
+            print(f"[Kokoro] Verdict scene: slowing down to speed={speed}")
+
         print(f"[Kokoro] Context='{context}' -> voice='{voice}', speed={speed:.2f}")
 
         chunks = []
@@ -164,15 +188,21 @@ def generate_audio_kokoro(text, wav_path, context: str = "neutral") -> bool:
 
         combined = np.concatenate(chunks)
 
-        # PHASE 21: Prepend 120ms of leading silence to prevent first-word clipping.
+        # Prepend 120ms of leading silence to prevent first-word clipping.
         # Kokoro generates audio with no leading silence. When MoviePy loads the WAV
         # and composes it with the whoosh SFX, a sub-frame alignment offset can clip
         # the very first phoneme. 120ms of silence gives the mixer a safe runway.
-        _SAMPLE_RATE = 24000
-        _LEAD_SILENCE_MS = 120
+        _SAMPLE_RATE = KOKORO_SAMPLE_RATE
+        _LEAD_SILENCE_MS = KOKORO_LEAD_SILENCE_MS
         _lead_samples = int(_SAMPLE_RATE * _LEAD_SILENCE_MS / 1000)
         _lead_silence = np.zeros(_lead_samples, dtype=np.float32)
         combined = np.concatenate([_lead_silence, combined])
+
+        if is_paragraph_end:
+            _trail_samples = int(_SAMPLE_RATE * 1.0)
+            _trail_silence = np.zeros(_trail_samples, dtype=np.float32)
+            combined = np.concatenate([combined, _trail_silence])
+            print(f"[Kokoro] Paragraph end scene: appended 1.0s silence")
 
         sf.write(wav_path, combined, samplerate=_SAMPLE_RATE)
         ok = os.path.exists(wav_path) and os.path.getsize(wav_path) > 1024
@@ -180,7 +210,8 @@ def generate_audio_kokoro(text, wav_path, context: str = "neutral") -> bool:
             _dur_s = combined.shape[0] / _SAMPLE_RATE
             print(f"[Kokoro] Audio saved ({_dur_s:.2f}s incl. 120ms lead) -> {wav_path}")
             normalize_audio(wav_path)
-            trim_audio_silence(wav_path)   # remove tail silence for tight scene transitions
+            if not is_paragraph_end:
+                trim_audio_silence(wav_path)   # remove tail silence for tight scene transitions
         return ok
     except Exception as exc:
         print(f"[Kokoro] Audio generation error: {exc}")
@@ -239,7 +270,37 @@ def _merge_wavs(wav_paths: list[str], output_path: str) -> bool:
     return True
 
 
-def generate_audio(text: str, index: int, context: str = "neutral") -> str | None:
+HINDI_PIPER_MODEL = os.path.join(os.path.dirname(PIPER_MODEL), "hi_IN-rohan-medium.onnx")
+
+def _ensure_hindi_model() -> bool:
+    """Ensure Hindi ONNX and JSON files are present, download if missing."""
+    p_dir = os.path.dirname(PIPER_MODEL)
+    onnx_path = os.path.join(p_dir, "hi_IN-rohan-medium.onnx")
+    json_path = os.path.join(p_dir, "hi_IN-rohan-medium.onnx.json")
+    
+    if os.path.isfile(onnx_path) and os.path.isfile(json_path):
+        return True
+        
+    print("[VoiceGen] Hindi Piper voice files missing. Downloading from Hugging Face...")
+    import urllib.request
+    try:
+        os.makedirs(p_dir, exist_ok=True)
+        urllib.request.urlretrieve(
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/rohan/medium/hi_IN-rohan-medium.onnx",
+            onnx_path
+        )
+        urllib.request.urlretrieve(
+            "https://huggingface.co/rhasspy/piper-voices/resolve/main/hi/hi_IN/rohan/medium/hi_IN-rohan-medium.onnx.json",
+            json_path
+        )
+        print("[VoiceGen] Hindi model downloaded successfully!")
+        return True
+    except Exception as e:
+        print(f"[VoiceGen] Failed to download Hindi voice: {e}")
+        return False
+
+
+def generate_audio(text: str, index: int, context: str = "neutral", language: str = "en", pause_after_sentence: float = None, video_style: str = "briefing", is_paragraph_end: bool = False, is_verdict: bool = False) -> str | None:
     """
     Use Kokoro/Piper TTS to synthesise *text* and write a WAV file to AUDIO_DIR.
 
@@ -250,6 +311,9 @@ def generate_audio(text: str, index: int, context: str = "neutral") -> str | Non
         text:    narration text
         index:   scene index for filename
         context: story context ("war", "politics", etc.) for voice/speed selection
+        language: language of the script ("en" or "hi")
+        pause_after_sentence: pause between sentences
+        video_style: video format ("briefing", "context", "tracker")
 
     Returns the WAV path on success, None on failure.
     """
@@ -260,30 +324,49 @@ def generate_audio(text: str, index: int, context: str = "neutral") -> str | Non
     if os.path.exists(wav_path):
         os.remove(wav_path)
 
-    _active_voice = _CONTEXT_VOICE_MAP.get(context, _RUN_VOICE)
-    print(f"[VoiceGen] Generating audio for scene {index}: {text[:60]}…")
-    _kokoro_status = "Y" if KOKORO_AVAILABLE else f"N -- {_KOKORO_FAIL_REASON or 'not installed'}"
-    print(f"[VoiceGen] Voice: '{_active_voice}' (context='{context}') | Kokoro={_kokoro_status}")
-    if KOKORO_AVAILABLE:
-        if generate_audio_kokoro(text, wav_path, context=context):
+    is_hindi = (language == "hi")
+    
+    # Resolve dynamic format schedule voice and speed
+    active_voice, active_speed = get_voice_for_format(video_style, context)
+
+    if is_verdict:
+        active_speed = 0.90
+        print(f"[VoiceGen] Verdict scene: slowing down to speed={active_speed}")
+
+    # Hindi is not supported natively by local Kokoro pipelines - force Piper
+    if KOKORO_AVAILABLE and not is_hindi:
+        print(f"[VoiceGen] Generating English audio for scene {index} via Kokoro...")
+        print(f"[VoiceGen] Voice: '{active_voice}' (speed={active_speed:.2f})")
+        if generate_audio_kokoro(text, wav_path, context=context, voice=active_voice, speed=active_speed, is_paragraph_end=is_paragraph_end, is_verdict=is_verdict):
             print(f"[VoiceGen][Kokoro] Audio saved -> {wav_path}")
             return wav_path
 
-    print("[VoiceGen] Kokoro unavailable -- falling back to Piper")
+    if is_hindi:
+        print(f"[VoiceGen] Generating Hindi audio for scene {index} via Piper...")
+        if not _ensure_hindi_model():
+            print("[VoiceGen] Cannot generate Hindi audio: Hindi model missing.")
+            return None
+        active_model = HINDI_PIPER_MODEL
+    else:
+        print("[VoiceGen] Kokoro unavailable/bypassed -- falling back to English Piper")
+        if not _check_piper():
+            return None
+        active_model = PIPER_MODEL
 
-    if not _check_piper():
-        return None
+    # Inverse speed mapping for Piper length_scale
+    base_length = PIPER_LENGTH_SCALE_EN if not is_hindi else PIPER_LENGTH_SCALE_HI
+    length_scale_val = base_length / active_speed
 
-    # Split text into sentence fragments
-    fragments = re.split(r'(?<=[.!?])\s+', text.strip())
+    # Split text into sentence fragments (handle both English periods and Hindi purna viram ।)
+    fragments = re.split(r'(?<=[.!?।])\s+', text.strip())
     fragments = [f for f in fragments if f.strip()]
 
     if len(fragments) <= 1:
         # Single fragment -- use original logic
         cmd = [
             PIPER_EXECUTABLE,
-            "--model",       PIPER_MODEL,
-            "--length_scale", "1.15",
+            "--model",       active_model,
+            "--length_scale", f"{length_scale_val:.4f}",
             "--output_file", wav_path,
         ]
 
@@ -311,6 +394,16 @@ def generate_audio(text: str, index: int, context: str = "neutral") -> str | Non
         if os.path.exists(wav_path) and os.path.getsize(wav_path) > 1024:
             print(f"[VoiceGen] Audio saved -> {wav_path}")
             normalize_audio(wav_path)
+            if is_paragraph_end:
+                silence_wav = os.path.join(AUDIO_DIR, f"scene_{index:02d}_silence_tail.wav")
+                with open(silence_wav, 'wb') as f:
+                    f.write(_generate_silence(1000))
+                temp_merged = wav_path.replace(".wav", "_merged_tail.wav")
+                if _merge_wavs([wav_path, silence_wav], temp_merged):
+                    os.replace(temp_merged, wav_path)
+                    if os.path.exists(silence_wav):
+                        os.remove(silence_wav)
+                    print(f"[VoiceGen] Appended 1.0s silence to Piper single fragment -> {wav_path}")
             return wav_path
 
         print(f"[VoiceGen] Output file missing or empty after Piper run.")
@@ -325,8 +418,8 @@ def generate_audio(text: str, index: int, context: str = "neutral") -> str | Non
 
             cmd = [
                 PIPER_EXECUTABLE,
-                "--model",       PIPER_MODEL,
-                "--length_scale", "1.15",
+                "--model",       active_model,
+                "--length_scale", f"{length_scale_val:.4f}",
                 "--output_file", frag_wav,
             ]
 
@@ -339,11 +432,12 @@ def generate_audio(text: str, index: int, context: str = "neutral") -> str | Non
                 )
                 if result.returncode == 0 and os.path.exists(frag_wav) and os.path.getsize(frag_wav) > 1024:
                     temp_wavs.append(frag_wav)
-                    # Insert 0.5s silence after each fragment except the last
+                    # Insert silence after each fragment except the last
                     if i < len(fragments) - 1:
                         silence_wav = os.path.join(AUDIO_DIR, f"scene_{index:02d}_silence_{i}.wav")
                         with open(silence_wav, 'wb') as f:
-                            f.write(_generate_silence(int(PAUSE_AFTER_SENTENCE * 1000)))
+                            active_pause = pause_after_sentence if pause_after_sentence is not None else PAUSE_AFTER_SENTENCE
+                            f.write(_generate_silence(int(active_pause * 1000)))
                         temp_wavs.append(silence_wav)
                 else:
                     err = result.stderr.decode("utf-8", errors="replace")
@@ -352,6 +446,13 @@ def generate_audio(text: str, index: int, context: str = "neutral") -> str | Non
                 print(f"[VoiceGen] Fragment {i} exception: {exc}")
 
         if temp_wavs:
+            if is_paragraph_end:
+                silence_wav = os.path.join(AUDIO_DIR, f"scene_{index:02d}_silence_tail.wav")
+                with open(silence_wav, 'wb') as f:
+                    f.write(_generate_silence(1000))
+                temp_wavs.append(silence_wav)
+                print(f"[VoiceGen] Appended 1.0s silence to Piper multi-fragment list")
+            
             if _merge_wavs(temp_wavs, wav_path):
                 # Clean up temp files
                 for tw in temp_wavs:
@@ -436,8 +537,8 @@ def normalize_audio(wav_path: str) -> bool:
 
 
 def trim_audio_silence(wav_path: str,
-                        silence_db: float = -45.0,
-                        keep_tail_s: float = 0.08) -> bool:
+                        silence_db: float = SILENCE_DB_THRESHOLD,
+                        keep_tail_s: float = SILENCE_KEEP_TAIL_SECS) -> bool:
     """
     Remove excessive trailing silence from a WAV file.
     Uses ffmpeg silencedetect to find where speech ends, then trims
@@ -484,15 +585,15 @@ def trim_audio_silence(wav_path: str,
 
     _speech_end = max(_silence_ends)
     
-    # PHASE 20: Silence trimming safety checks
+    # Silence trimming safety checks
     # Ensure we don't truncate very short audio, and only trim if speech ends at least 0.20s before physical end
-    if _total - _speech_end < 0.20 or _total < 1.20:
+    if _total - _speech_end < 0.20 or _total < SILENCE_MIN_AUDIO_SECS:
         return False
 
     _trim_point = min(_speech_end + keep_tail_s, _total)
 
-    # Only trim if we remove more than 0.15s
-    if _total - _trim_point < 0.15:
+    # Only trim if we remove more than SILENCE_MIN_TRIM_SECS
+    if _total - _trim_point < SILENCE_MIN_TRIM_SECS:
         return False
 
     # Step 2: trim the file

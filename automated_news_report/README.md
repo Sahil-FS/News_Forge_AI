@@ -24,25 +24,23 @@ Multiple RSS Feeds (BBC, Sky, DW, etc.)
 ## Project Structure
 
 ```
-project/
-├── main.py
-├── config.py
-├── modules/
-│   ├── __init__.py
-│   ├── news_fetcher.py
-│   ├── script_generator.py
-│   ├── scene_planner.py
-│   ├── image_fetcher.py
-│   ├── voice_generator.py
-│   └── video_builder.py
-├── piper/                    ← you create this (see Step 3)
-│   ├── piper                 ← Piper binary
-│   ├── en_US-lessac-medium.onnx
-│   └── en_US-lessac-medium.onnx.json
-├── output/                   ← created automatically
-│   ├── audio/
-│   ├── images/
-│   └── news_video.mp4
+automated_news_report/
+├── main.py                     # E2E pipeline orchestrator
+├── config.py                   # Central settings, voice/branding configs
+├── news_fetcher.py             # Feedparser article acquisition & scraper
+├── script_generator.py         # Ollama script engine & context detection
+├── long_form_script_generator.py # Deep-dive narrative structured script writer
+├── scene_planner.py            # Sentence chunking & spaCy NER analysis
+├── image_fetcher.py            # Editorial scraping, Pexels, PIL card drawer
+├── voice_generator.py          # Neural Kokoro TTS engine & audio cleanup
+├── video_builder.py            # Renders short-form vertical (9:16) MP4
+├── long_form_video_builder.py  # Renders long-form landscape (16:9) MP4
+├── ui_server.py                # Local web control dashboard
+├── db_manager.py               # SQLite tracking manager
+├── youtube_uploader.py         # Automated OAuth YouTube upload pipeline
+├── piper/                      # Fallback TTS runtime files & voices
+├── assets/                     # Brand logos, fallback placeholders
+├── output/                     # Auto-created directory for WAVs & final MP4s
 └── README.md
 ```
 
@@ -189,31 +187,48 @@ export PIPER_MODEL=/opt/voices/en_US-lessac-medium.onnx
 ---
 
 ## Usage
+## Usage
 
 ```bash
-cd project
+# Run the pipeline end-to-end (defaults to vertical format)
 python main.py
+
+# Run with format, channel, category and test-mode arguments
+python main.py --format both --channel newscup --category world --test-mode
+
+# Available format options: vertical, landscape, both
+# Available category options: world, politics, business, tech, science, entertainment, sports
+# Available channel options: newscup, newscup_india
 ```
 
-The final video will be written to `output/news_video.mp4`.
+The final video files will be written to `output/news_video.mp4` (vertical) and `output/news_video_long.mp4` (landscape).
+
+### Run the Web Dashboard
+
+A local web application is available to monitor the pipeline and view output history:
+
+```bash
+python ui_server.py
+```
+Then navigate to `http://127.0.0.1:5000` in your web browser.
 
 ### Run individual modules
 
 ```bash
 # Test the news fetcher
-python modules/news_fetcher.py
+python news_fetcher.py
 
 # Test the summariser
-python modules/script_generator.py
+python script_generator.py
 
 # Test image fetching
-python modules/image_fetcher.py
+python image_fetcher.py
 
-# Test Piper TTS
-python modules/voice_generator.py
+# Test Kokoro/Piper TTS voice generation
+python voice_generator.py
 
-# Smoke-test the video builder (blank clips, no Piper needed)
-python modules/video_builder.py
+# Smoke-test the video builder
+python video_builder.py
 ```
 
 ---
@@ -222,23 +237,31 @@ python modules/video_builder.py
 Parses multiple regional and international RSS feeds (BBC, Sky News, Deutsche Welle, Al Jazeera, NDTV, Times of India, and ESPN) and scores headlines. Selects the most relevant, high-impact article, executes direct HTTP scrapers with auto-retries, and extracts clean, fact-dense content.
 
 ### 2 · Script Generator (`Ollama Llama3` + `spaCy`)
-Uses a local LLM (Llama3 via Ollama) to write professional social narrations using a **Dynamic Context-Aware Prompt Architecture**. Ollama is dynamically prompted with custom structural requirements depending on whether the article is tagged as `tense/serious` (disasters/conflict), `politics` (legislation/diplomacy), or `positive/informative/neutral` (launches/discoveries), preventing hallucinations and ensuring brand alignment. A strict regex normalizer scrubs AI meta-commentary, while a spaCy-based extractive generator serves as a 100% factual fallback.
+Uses a local LLM (Llama3 via Ollama) to write professional news narrations using a **Dynamic Context-Aware Prompt Architecture**.
+- **Short-form & Long-form Script Engines (`script_generator.py` & `long_form_script_generator.py`):** Generates 200–300 words structured deep-dive narratives with 5-layer sequencing (Hook, Context, Core Evidence/Citations, Secondary Analysis, and Impact/Outro).
+- **Evidence Tags:** Injects direct inline citations such as `[QUOTE: "text"]`, `[TWEET: "user: text"]`, or `[DOCUMENT: "fact"]` into the script flow.
+- A spaCy-based extractive generator serves as a 100% factual fallback.
 
 ### 3 · Scene Planner (`spaCy`)
-Splits the generated news script into caption-friendly visual scenes. Uses NLP Named Entity Recognition (NER) to extract key organizations, events, people, and geographic locations. Derives a three-tier country context for map stingers and generates scene-specific search queries.
+Splits the generated script into caption-friendly visual scenes. Matches quote, tweet, and document bracketed tags to map scenes to specialized types: `quote_card`, `tweet_overlay`, or `evidence_graphic`. Uses NLP Named Entity Recognition (NER) to derive country contexts for geographic map stingers and generates scene-specific search queries.
 
 ### 4 · Image Fetcher (DuckDuckGo / Pexels / Wiki / AI)
-Fetches high-impact portrait (9:16) visuals. Realism and journalistic credibility are prioritized:
-* **Local Cache Validation:** Queries a hash of the scene keyword before hit APIs to reuse existing images instantly.
-* **Map Image Cache Lock:** Skips slow geocoding/drawing by instantly loading pre-compiled location maps.
-* **Layered Priorities:** Searches Wikipedia person photo (P1), Pexels news-realistic photography (P1.5), Wikipedia topic fallback (P2), Unsplash (P3), and Pollinations.ai contextual AI images (P5.5 fallback) with strict clipart/toy rejection filters.
+Fetches and generates high-impact visual backgrounds:
+- **Priority 0 Scraper:** Parses metadata tags (`og:image`, `twitter:image`) directly from the article URL.
+- **Evidence Graphic Generator:** Programmatically generates styled PIL-based translucent overlay cards with cyberpunk neon borders, wrapped text, and custom metadata, bypassing web/stock search for quote, tweet, and document scenes.
+- **Layered Fallbacks:** Searches Wikipedia person photo (P1), Pexels news-realistic photography (P1.5), Wikipedia topic fallback (P2), Unsplash (P3), and Pollinations.ai contextual AI images (P5.5 fallback).
+- **Anti-Stock Drift:** Filters out generic illustrations, drawings, and renders (e.g. rejecting URLs or queries with `'3D'`, `'Render'`, `'Illustration'`), falling back to photojournalistic AI prompts.
 
 ### 5 · Voice Generator (Kokoro TTS / Piper)
-Generates stunning, human-quality voice overs using **Kokoro TTS** (`hexgrad/Kokoro-82M` neural model) with custom voice and speed mappings tailored to the emotional context (e.g., British male gravitas for conflict, energetic female for achievements). Integrates automatic loudnorm normalization to EBU R128 (-23 LUFS) and decibel-level silence trimming (80ms natural decay tail). Piper TTS serves as a fast local ONNX fallback.
+Generates stunning, human-quality voice overs using **Kokoro TTS** (`hexgrad/Kokoro-82M` neural model) with voice mappings tailored to the emotional context.
+- **Pacing Acceleration:** Forces English news speech speed to **1.22x** to ensure high audience retention, while slowing to **0.90x** for heavy, serious verdict segments.
+- **Audio Prep:** Integrates automatic loudnorm normalization to EBU R128 (-23 LUFS) and decibel-level silence trimming (80ms natural decay tail). Piper TTS serves as a local ONNX fallback.
 
-### 6 · Video Builder (`MoviePy` + `Pillow`)
-Composes H.264 / AAC vertical MP4s. Applies Gaussian blurs, Ken Burns zooms, and mid-scene visual cuts. Automatically appends animated overlays, brand banners, and a dynamic call-to-action outro. 
-* **Dynamic Scene Drop:** If a timeline compression ratio drops below $0.95$, the builder dynamically drops middle scenes (keeping hook and conclusion) and recalculates all boundaries to eliminate caption overlap and narration cutoffs completely.
+### 6 · Video Builders (`MoviePy` + `Pillow`)
+Composes MP4s in vertical (`video_builder.py`, 1080×1920) and landscape (`long_form_video_builder.py`, 1920×1080) layouts.
+- **Dynamic Audio Ducking:** Vectorized MoviePy filter operations automatically duck background music volume from normal levels (`0.12`) to a whisper level (`0.025`) during evidence, quote, and tweet scenes to elevate narrative impact.
+- **Visual Filters:** Applies Gaussian blurs, Ken Burns pan/zooms, location map stingers, animated overlays, crawling lower-thirds, and dynamic outre/CTA cards.
+- **Compression Guard:** Automatically compresses or drops middle scenes if duration parameters drop below safety thresholds, ensuring zero caption overlap.
 
 ---
 

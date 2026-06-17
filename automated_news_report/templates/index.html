@@ -1,0 +1,1192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Multi-Channel AI News Platform</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --panel: rgba(17, 24, 39, 0.7);
+      --panel-border: rgba(255, 255, 255, 0.08);
+      --ink: #f3f4f6;
+      --muted: #9ca3af;
+      --line: rgba(255, 255, 255, 0.1);
+      
+      --red: #f43f5e;
+      --red-glow: rgba(244, 63, 94, 0.35);
+      --teal: #0d9488;
+      --teal-glow: rgba(13, 148, 136, 0.35);
+      
+      --accent: var(--red);
+      --accent-glow: var(--red-glow);
+    }
+    
+    * { box-sizing: border-box; }
+    
+    body {
+      margin: 0;
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      overflow-x: hidden;
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(244, 63, 94, 0.08) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(13, 148, 136, 0.08) 0px, transparent 50%);
+      background-attachment: fixed;
+    }
+    
+    header {
+      height: 70px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      background: rgba(10, 15, 26, 0.85);
+      border-bottom: 1px solid var(--panel-border);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    
+    header strong {
+      font-family: 'Outfit', sans-serif;
+      font-size: 22px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #fff 30%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.5px;
+    }
+    
+    header .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--panel-border);
+    }
+    
+    header .status-badge .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #9ca3af;
+    }
+    
+    header .status-badge.active .dot {
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981;
+      animation: pulse 1.8s infinite;
+    }
+    
+    @keyframes pulse {
+      0% { opacity: 0.4; }
+      50% { opacity: 1; }
+      100% { opacity: 0.4; }
+    }
+    
+    main {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      min-height: calc(100vh - 70px);
+    }
+    
+    aside {
+      background: rgba(10, 15, 26, 0.4);
+      border-right: 1px solid var(--panel-border);
+      padding: 24px;
+      backdrop-filter: blur(8px);
+    }
+    
+    section {
+      padding: 32px;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    
+    .sidebar-section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--muted);
+      letter-spacing: 1.5px;
+      margin: 24px 0 12px;
+    }
+    
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      margin: 14px 0 6px;
+    }
+    
+    select, button, input, textarea {
+      width: 100%;
+      height: 42px;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--ink);
+      padding: 0 14px;
+      font-size: 14px;
+      font-family: inherit;
+      outline: none;
+      transition: all 0.25s ease;
+    }
+    
+    select:focus, input:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 12px var(--accent-glow);
+      background: rgba(255, 255, 255, 0.06);
+    }
+    
+    button {
+      cursor: pointer;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    
+    button.primary {
+      background: linear-gradient(135deg, var(--accent) 0%, rgba(200, 10, 50, 0.8) 100%);
+      color: white;
+      border: none;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+    
+    button.primary:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 24px var(--accent-glow);
+    }
+    
+    button.secondary {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--panel-border);
+    }
+    
+    button.secondary:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.09);
+    }
+    
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+    
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 20px;
+    }
+    
+    .view[hidden] {
+      display: none !important;
+    }
+    
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      padding: 24px;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
+      transition: border-color 0.3s;
+    }
+    
+    .span-3 { grid-column: span 3; }
+    .span-4 { grid-column: span 4; }
+    .span-5 { grid-column: span 5; }
+    .span-6 { grid-column: span 6; }
+    .span-7 { grid-column: span 7; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
+    
+    .metric {
+      font-family: 'Outfit', sans-serif;
+      font-size: 32px;
+      font-weight: 800;
+      margin-top: 8px;
+      background: linear-gradient(to right, #fff, #9ca3af);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      background: rgba(255, 255, 255, 0.02);
+      padding: 6px;
+      border-radius: 10px;
+      border: 1px solid var(--panel-border);
+    }
+    
+    .tab {
+      width: auto;
+      padding: 0 16px;
+      height: 38px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      border: none;
+      background: transparent;
+      border-radius: 6px;
+    }
+    
+    .tab.active {
+      background: rgba(255, 255, 255, 0.08);
+      color: white;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    }
+    
+    .channels {
+      display: grid;
+      gap: 12px;
+    }
+    
+    .channel {
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      padding: 16px;
+      cursor: pointer;
+      background: rgba(255, 255, 255, 0.02);
+      transition: all 0.25s ease;
+    }
+    
+    .channel:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+    
+    .channel.active {
+      border-color: var(--accent);
+      background: rgba(255, 255, 255, 0.05);
+      box-shadow: 0 0 15px var(--accent-glow);
+    }
+    
+    .channel strong {
+      display: block;
+      font-family: 'Outfit', sans-serif;
+      font-size: 16px;
+      color: #fff;
+    }
+    
+    .source-list {
+      display: grid;
+      gap: 12px;
+      max-height: 400px;
+      overflow-y: auto;
+      padding-right: 8px;
+    }
+    
+    .source {
+      padding: 14px;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      font-size: 13px;
+      background: rgba(255, 255, 255, 0.01);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    
+    .source-info {
+      word-break: break-all;
+    }
+    
+    .source-del-btn {
+      width: 32px;
+      height: 32px;
+      min-width: 32px;
+      padding: 0;
+      border-radius: 6px;
+      background: rgba(244, 63, 94, 0.15);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      color: var(--red);
+    }
+    
+    .source-del-btn:hover {
+      background: var(--red);
+      color: white;
+    }
+    
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 12px;
+    }
+    
+    .step {
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.01);
+      text-align: center;
+      transition: all 0.3s;
+    }
+    
+    .step.active {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+      box-shadow: 0 0 12px var(--accent-glow);
+    }
+    
+    .step.done {
+      border-color: #4b5563;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--muted);
+    }
+    
+    pre {
+      margin: 0;
+      height: 320px;
+      overflow-y: auto;
+      background: #060913;
+      color: #38bdf8;
+      border-radius: 8px;
+      padding: 16px;
+      font-family: 'Consolas', 'Courier New', Courier, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      border: 1px solid var(--panel-border);
+    }
+    
+    .artifact {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+      font-size: 13px;
+    }
+    
+    .artifact:last-child {
+      border-bottom: none;
+    }
+    
+    .ok { color: #10b981; font-weight: 700; }
+    .bad { color: var(--muted); }
+    
+    .chart-container {
+      height: 200px;
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      padding-top: 20px;
+      border-bottom: 2px solid var(--line);
+    }
+    
+    .chart-bar {
+      flex: 1;
+      background: linear-gradient(to top, var(--accent) 0%, rgba(244, 63, 94, 0.2) 100%);
+      border-radius: 4px 4px 0 0;
+      position: relative;
+      min-height: 5px;
+      transition: height 0.5s ease;
+    }
+    
+    .chart-bar-value {
+      position: absolute;
+      top: -24px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 11px;
+      font-weight: 700;
+      color: white;
+    }
+    
+    .chart-label {
+      text-align: center;
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+    
+    .flow-card {
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--panel-border);
+      background: rgba(255, 255, 255, 0.01);
+      margin-bottom: 12px;
+    }
+    
+    .flow-card strong {
+      display: block;
+      color: white;
+      margin-bottom: 4px;
+    }
+    
+    .flow-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      margin-right: 8px;
+    }
+    
+    .audio-scene-list {
+      display: grid;
+      gap: 12px;
+      max-height: 480px;
+      overflow-y: auto;
+    }
+    
+    .audio-scene-item {
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.01);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .audio-scene-text {
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    
+    .audio-scene-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    
+    .thumbnail-gallery {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    
+    .thumbnail-box {
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #000;
+      aspect-ratio: 16/9;
+      position: relative;
+    }
+    
+    .thumbnail-box.portrait {
+      aspect-ratio: 9/16;
+      max-height: 380px;
+      margin: 0 auto;
+      width: 100%;
+      max-width: 215px;
+    }
+    
+    .thumbnail-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    
+    .video-box {
+      width: 100%;
+      border: 1px solid var(--panel-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: #000;
+      aspect-ratio: 16/9;
+    }
+    
+    .video-box.portrait {
+      aspect-ratio: 9/16;
+      max-height: 500px;
+      max-width: 280px;
+      margin: 0 auto;
+    }
+    
+    .video-box video {
+      width: 100%;
+      height: 100%;
+    }
+    
+    @media (max-width: 1024px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-right: none; border-bottom: 1px solid var(--panel-border); }
+      .span-3, .span-4, .span-5, .span-6, .span-7, .span-8 { grid-column: span 12; }
+      .pipeline { grid-template-columns: repeat(4, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Multi-Channel AI News Platform</strong>
+    <div style="display: flex; align-items: center; gap: 16px;">
+      <div id="statusText" class="status-badge"><span class="dot"></span>Idle</div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <input type="password" id="uiApiKeyInput" placeholder="Enter API Key" style="height: 32px; width: 180px; font-size: 12px; border-radius: 6px; padding: 0 8px; margin: 0; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--panel-border); color: var(--ink);">
+      </div>
+    </div>
+  </header>
+  
+  <main>
+    <aside>
+      <div class="sidebar-section-title">Select Channel</div>
+      <div id="channels" class="channels"></div>
+      
+      <div class="sidebar-section-title">Run Settings</div>
+      <label>Category</label>
+      <select id="category"></select>
+      
+      <label>Format</label>
+      <select id="format">
+        <option value="both">Short + Long</option>
+        <option value="short">Shorts Only (9:16)</option>
+        <option value="long">Long Video (16:9)</option>
+      </select>
+      
+      <label>Execution Target</label>
+      <select id="stageTarget">
+        <option value="">Full Pipeline Run</option>
+        <option value="news">News Fetch Only</option>
+        <option value="script">Script Only</option>
+        <option value="scenes">Scenes Only</option>
+        <option value="assets">Assets & Voice Only</option>
+      </select>
+      
+      <label><input id="testMode" type="checkbox" style="width:auto;height:auto;margin-right:8px">Test Mode (Mock Feeds)</label>
+      <label><input id="noClean" type="checkbox" style="width:auto;height:auto;margin-right:8px">Keep Previous Outputs</label>
+      
+      <button id="runBtn" class="primary" style="margin-top:20px">Start Generation</button>
+    </aside>
+    
+    <section>
+      <div class="tabs">
+        <button class="tab active" data-tab="dashboard">Dashboard</button>
+        <button class="tab" data-tab="feeds">Sources</button>
+        <button class="tab" data-tab="workflow">Story & Script</button>
+        <button class="tab" data-tab="studio">Voice & Thumbnails</button>
+        <button class="tab" data-tab="video">Video Player</button>
+        <button class="tab" data-tab="upload">Uploads</button>
+        <button class="tab" data-tab="analytics">Analytics</button>
+        <button class="tab" data-tab="settings">Settings</button>
+      </div>
+      
+      <!-- DASHBOARD VIEW -->
+      <div id="dashboard" class="view grid">
+        <div class="panel span-3"><div class="muted">Active Profile</div><div id="metricChannel" class="metric">-</div></div>
+        <div class="panel span-3"><div class="muted">Primary Language</div><div id="metricLanguage" class="metric">-</div></div>
+        <div class="panel span-3"><div class="muted">Current Stage</div><div id="metricStage" class="metric">idle</div></div>
+        <div class="panel span-3"><div class="muted">Runs Completed</div><div id="metricRunsCount" class="metric">0</div></div>
+        <div class="panel span-12">
+          <strong>Active Flow State</strong>
+          <div class="pipeline" id="pipeline" style="margin-top:14px"></div>
+        </div>
+        <div class="panel span-8">
+          <strong>Console Output logs</strong>
+          <pre id="logs" style="margin-top:14px"></pre>
+        </div>
+        <div class="panel span-4">
+          <strong>Rendered Artifacts</strong>
+          <div id="artifacts" style="margin-top:14px"></div>
+        </div>
+      </div>
+      
+      <!-- SOURCES VIEW -->
+      <div id="feeds" class="view grid" hidden>
+        <div class="panel span-6">
+          <strong>Add New RSS Feed</strong>
+          <div style="margin-top:14px">
+            <label>Category Mapping</label>
+            <select id="feedCategorySelect"></select>
+            <label>RSS Feed URL</label>
+            <input type="text" id="feedUrlInput" placeholder="https://news.google.com/rss...">
+            <button id="addFeedBtn" class="primary" style="margin-top:18px">Add Source</button>
+          </div>
+        </div>
+        <div class="panel span-6">
+          <strong>Manage Sources</strong>
+          <p class="muted" id="sourcePolicy"></p>
+          <div class="source-list" id="sourceList" style="margin-top:14px"></div>
+        </div>
+      </div>
+      
+      <!-- STORY & SCRIPT VIEW -->
+      <div id="workflow" class="view grid" hidden>
+        <div class="panel span-12">
+          <strong>Fact Verification & Story Selection</strong>
+          <p class="muted">Ranked articles fetched from RSS feeds. Select a story to review or generate/edit the script.</p>
+          <div id="storyList" style="margin-top:14px">
+            <div class="flow-card"><span class="muted">No stories fetched. Run Step 1 (News Fetch Only) or complete script stage.</span></div>
+          </div>
+        </div>
+        <div class="panel span-12">
+          <strong>Human-in-the-Loop Script Editor</strong>
+          <p class="muted">Modify the generated script below before rendering voice and video clips.</p>
+          <textarea id="scriptTextarea" style="height:220px;margin-top:14px" placeholder="Generate a script first or edit the script.txt output..."></textarea>
+          <div style="display:flex;gap:14px;margin-top:14px">
+            <button id="saveScriptBtn" class="secondary" style="width:auto">Save Changes</button>
+            <button id="continueAssetsBtn" class="primary" style="width:auto">Render Script to Voice & Assets</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- VOICE & THUMBNAILS VIEW -->
+      <div id="studio" class="view grid" hidden>
+        <div class="panel span-7">
+          <strong>Voice Studio (Scene Narration)</strong>
+          <p class="muted">Play scene audio tracks and verify Hindi pronunciation or timing.</p>
+          <div class="audio-scene-list" id="audioSceneList" style="margin-top:14px">
+            <span class="muted">Voiceover audio files are shown here after asset generation completes.</span>
+          </div>
+        </div>
+        <div class="panel span-5">
+          <strong>Thumbnail Studio</strong>
+          <p class="muted">Review portrait (Mobile Shorts) and widescreen (Long Video) thumbnails.</p>
+          <div class="thumbnail-gallery" style="margin-top:14px">
+            <div>
+              <div class="muted" style="text-align:center;margin-bottom:8px">Shorts (9:16)</div>
+              <div class="thumbnail-box portrait" id="thumbPortrait"><span class="muted" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">Missing</span></div>
+            </div>
+            <div>
+              <div class="muted" style="text-align:center;margin-bottom:8px">Widescreen (16:9)</div>
+              <div class="thumbnail-box" id="thumbLandscape"><span class="muted" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">Missing</span></div>
+            </div>
+          </div>
+          <button id="renderVideoBtn" class="primary" style="margin-top:20px">Approve Studio Assets & Render Final Video</button>
+        </div>
+      </div>
+      
+      <!-- VIDEO VIEW -->
+      <div id="video" class="view grid" hidden>
+        <div class="panel span-7">
+          <strong>Widescreen Video Preview (16:9)</strong>
+          <div class="video-box" style="margin-top:14px" id="videoBoxLong">
+            <span class="muted" style="display:flex;justify-content:center;align-items:center;height:100%">Render long video format to preview</span>
+          </div>
+        </div>
+        <div class="panel span-5">
+          <strong>Portrait Shorts Preview (9:16)</strong>
+          <div class="video-box portrait" style="margin-top:14px" id="videoBoxShort">
+            <span class="muted" style="display:flex;justify-content:center;align-items:center;height:100%">Render short video format to preview</span>
+          </div>
+        </div>
+      </div>
+      
+      <!-- UPLOADS VIEW -->
+      <div id="upload" class="view grid" hidden>
+        <div class="panel span-7">
+          <strong>Metadata Publisher</strong>
+          <div style="margin-top:14px">
+            <label>YouTube Title</label>
+            <input type="text" id="ytTitleInput">
+            <label>Description</label>
+            <textarea id="ytDescInput" style="height:180px"></textarea>
+            <label>Tags (Comma-separated)</label>
+            <input type="text" id="ytTagsInput">
+            <div style="display:flex;gap:14px;margin-top:20px">
+              <button id="uploadBtn" class="primary" style="width:auto">Publish to YouTube</button>
+              <button id="scheduleBtn" class="secondary" style="width:auto">Schedule Post</button>
+            </div>
+          </div>
+        </div>
+        <div class="panel span-5">
+          <strong>Channel OAuth Configuration</strong>
+          <div style="margin-top:14px">
+            <div class="flow-card">
+              <strong>OAuth Connection Status</strong>
+              <span id="oauthStatus" class="ok">CONNECTED (Simulated Mode Active)</span>
+            </div>
+            <p class="muted">To bind real YouTube channels, ensure your client_secrets.json is placed in the project root folder. The Google authorization flow will open in your default browser on first upload.</p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- ANALYTICS VIEW -->
+      <div id="analytics" class="view grid" hidden>
+        <div class="panel span-12" style="display:flex; justify-content:space-between; align-items:center">
+          <div>
+            <strong>YouTube Analytics Insight Sync Loop</strong>
+            <span class="muted" style="display:block; font-size:11px; margin-top:2px">Synchronize latest performance metrics from YouTube Studio.</span>
+          </div>
+          <button id="syncAnalyticsBtn" class="primary" style="width:auto">Sync Analytics Now</button>
+        </div>
+        <div class="panel span-3"><div class="muted">Total Impressions</div><div id="metricImpressions" class="metric">-</div></div>
+        <div class="panel span-3"><div class="muted">Total Views</div><div id="metricViews" class="metric">-</div></div>
+        <div class="panel span-3"><div class="muted">Average CTR</div><div id="metricCTR" class="metric">-</div></div>
+        <div class="panel span-3"><div class="muted">Subscribers Gained</div><div id="metricSubs" class="metric">-</div></div>
+        <div class="panel span-8">
+          <strong>Audience Retention (Average of last 3 videos)</strong>
+          <div class="chart-container" id="chartRetention"></div>
+        </div>
+        <div class="panel span-4">
+          <strong>Recent Videos Performance</strong>
+          <div id="recentVideosList" style="margin-top:14px; max-height:220px; overflow-y:auto">
+            <span class="muted">Sync analytics to load performance stats.</span>
+          </div>
+        </div>
+      </div>
+      
+      <!-- SETTINGS VIEW -->
+      <div id="settings" class="view grid" hidden>
+        <div class="panel span-12">
+          <strong>Settings & Environment variables (.env)</strong>
+          <p class="muted">Verify API keys and system configuration details.</p>
+          <div id="envFields" style="margin-top:14px"></div>
+          <button id="saveSettingsBtn" class="primary" style="width:auto;margin-top:18px">Save Configuration</button>
+        </div>
+      </div>
+    </section>
+  </main>
+  
+  <script>
+    // Intercept fetch to inject Bearer Token Auth
+    const originalFetch = window.fetch;
+    window.fetch = function(url, options = {}) {
+      const key = localStorage.getItem('news_ui_api_key');
+      if (key && url.toString().includes('/api/')) {
+        options.headers = options.headers || {};
+        if (options.headers instanceof Headers) {
+          options.headers.set('Authorization', `Bearer ${key}`);
+        } else if (Array.isArray(options.headers)) {
+          options.headers.push(['Authorization', `Bearer ${key}`]);
+        } else {
+          options.headers['Authorization'] = `Bearer ${key}`;
+        }
+      }
+      return originalFetch(url, options);
+    };
+
+    let profiles = [], selected = 'newscup', state = {};
+    const steps = ['news', 'script', 'scenes', 'assets', 'video'];
+    const tabs = document.querySelectorAll('.tab');
+    
+    function qs(id){ return document.getElementById(id); }
+    
+    function renderChannels(){
+      qs('channels').innerHTML = profiles.map(p => `
+        <div class="channel ${p.key===selected?'active':''}" data-key="${p.key}">
+          <strong>${p.display_name}</strong>
+          <span class="muted" style="font-size:11px">${p.language_label} | ${p.audience}</span>
+        </div>
+      `).join('');
+      document.querySelectorAll('.channel').forEach(el => el.onclick = () => {
+        selected = el.dataset.key;
+        
+        // Dynamically toggle primary colors in CSS variables based on selected channel
+        if(selected === 'newscup_india') {
+          document.documentElement.style.setProperty('--accent', 'var(--teal)');
+          document.documentElement.style.setProperty('--accent-glow', 'var(--teal-glow)');
+        } else {
+          document.documentElement.style.setProperty('--accent', 'var(--red)');
+          document.documentElement.style.setProperty('--accent-glow', 'var(--red-glow)');
+        }
+        
+        renderAll();
+      });
+    }
+    
+    function current(){ return profiles.find(p => p.key === selected) || profiles[0]; }
+    
+    function renderAll(){
+      const p = current(); if(!p) return;
+      renderChannels();
+      qs('category').innerHTML = p.categories.map(c => `<option value="${c}">${c}</option>`).join('');
+      qs('category').value = p.default_category;
+      
+      // Update feed add selector
+      qs('feedCategorySelect').innerHTML = p.categories.map(c => `<option value="${c}">${c}</option>`).join('');
+      
+      qs('metricChannel').textContent = p.display_name;
+      qs('metricLanguage').textContent = p.language_label;
+      qs('sourcePolicy').textContent = p.source_policy;
+      
+      // Update Settings Notes
+      const notesEl = qs('notes');
+      if (notesEl) {
+        notesEl.textContent = p.production_notes.join(' ');
+      }
+      
+      fetchFeeds();
+      renderPipeline();
+    }
+    
+    function renderPipeline(){
+      const active = state.stage || 'idle';
+      const html = steps.map(s => `
+        <div class="step ${s===active?'active':''} ${steps.indexOf(s) < steps.indexOf(active)?'done':''}">
+          <strong>${s.toUpperCase()}</strong>
+          <div class="muted" style="font-size:10px">${s==='script' || s==='video'?'human gate':'automated'}</div>
+        </div>
+      `).join('');
+      qs('pipeline').innerHTML = html;
+    }
+    
+    async function fetchFeeds() {
+      const r = await fetch(`/api/feeds?channel=${selected}`);
+      const feeds = await r.json();
+      qs('sourceList').innerHTML = Object.entries(feeds).map(([cat, urls]) => `
+        <div class="source">
+          <div class="source-info">
+            <strong style="color:var(--accent)">${cat.toUpperCase()}</strong><br>
+            ${urls.map(url => `
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;width:100%">
+                <span>${url}</span>
+                <button class="source-del-btn" onclick="deleteFeed('${cat}', '${url}')">×</button>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    async function deleteFeed(cat, url) {
+      if(!confirm(`Delete feed: ${url}?`)) return;
+      await fetch('/api/feeds', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({channel: selected, action: 'delete', category: cat, url: url})
+      });
+      fetchFeeds();
+    }
+    
+    qs('addFeedBtn').onclick = async () => {
+      const url = qs('feedUrlInput').value.strip ? qs('feedUrlInput').value.strip() : qs('feedUrlInput').value;
+      if(!url) return;
+      await fetch('/api/feeds', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({channel: selected, action: 'add', category: qs('feedCategorySelect').value, url: url})
+      });
+      qs('feedUrlInput').value = '';
+      fetchFeeds();
+    };
+    
+    function renderState(s){
+      state = s;
+      const statusBadge = qs('statusText');
+      if (s.running) {
+        statusBadge.classList.add('active');
+        statusBadge.innerHTML = `<span class="dot"></span>Pipeline Running`;
+      } else {
+        statusBadge.classList.remove('active');
+        statusBadge.innerHTML = `<span class="dot"></span>Idle${s.returncode===0?' (success)':s.returncode!==null?' (failed)':''}`;
+      }
+      
+      qs('runBtn').disabled = !!s.running;
+      qs('metricStage').textContent = s.stage || 'idle';
+      qs('logs').textContent = (s.logs || []).join('\n');
+      qs('logs').scrollTop = qs('logs').scrollHeight;
+      
+      const artifacts = s.artifacts || {};
+      qs('artifacts').innerHTML = Object.entries(artifacts).map(([k,v]) => `
+        <div class="artifact">
+          <span>${k}</span>
+          <span class="${v.exists?'ok':'bad'}">${v.exists?'ready':'missing'}</span>
+        </div>
+      `).join('');
+      
+      // Update Audio list, script edit box, thumbnails & videos dynamically based on stage completion
+      if (s.stage === 'script' || artifacts.short_script.exists) {
+        loadScriptReview();
+      }
+      if (artifacts.short_scenes.exists) {
+        loadVoiceSceneList();
+      }
+      renderPreviews(artifacts);
+    }
+    
+    async function loadScriptReview() {
+      if (state.running) return;
+      const r = await fetch(`/api/script?channel=${selected}&format=${qs('format').value}`);
+      const data = await r.json();
+      if (data.script && qs('scriptTextarea').value === '') {
+        qs('scriptTextarea').value = data.script;
+      }
+    }
+    
+    async function saveScript() {
+      const scriptText = qs('scriptTextarea').value;
+      await fetch('/api/script', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({channel: selected, format: qs('format').value, script: scriptText})
+      });
+      alert('Script saved successfully!');
+    }
+    
+    qs('saveScriptBtn').onclick = saveScript;
+    
+    qs('continueAssetsBtn').onclick = async () => {
+      await saveScript();
+      await fetch('/api/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({channel: selected, category: qs('category').value, format: qs('format').value, skip_to: 'scenes', stage: 'assets'})
+      });
+      qs('workflow').hidden = true;
+      qs('dashboard').hidden = false;
+      document.querySelector('[data-tab="dashboard"]').click();
+    };
+    
+    qs('renderVideoBtn').onclick = async () => {
+      await fetch('/api/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({channel: selected, category: qs('category').value, format: qs('format').value, skip_to: 'assets', stage: 'video'})
+      });
+      qs('studio').hidden = true;
+      qs('dashboard').hidden = false;
+      document.querySelector('[data-tab="dashboard"]').click();
+    };
+    
+    async function loadVoiceSceneList() {
+      const r = await fetch(`/api/scenes?channel=${selected}&format=${qs('format').value}`);
+      const scenes = await r.json();
+      if (!scenes || scenes.length === 0) return;
+      qs('audioSceneList').innerHTML = scenes.map((s, idx) => `
+        <div class="audio-scene-item">
+          <strong>Scene ${idx}</strong>
+          <div class="audio-scene-text">${s.text}</div>
+          <div class="audio-scene-controls">
+            ${s.audio_path ? `<audio src="/output/audio/${s.audio_path.split('/').pop().split('\\').pop()}" controls style="height:32px;width:100%"></audio>` : '<span class="bad">Audio missing</span>'}
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    function renderPreviews(artifacts) {
+      // 1. Thumbnails
+      if (artifacts.thumbnail_portrait.exists) {
+        qs('thumbPortrait').innerHTML = `<img src="/output/thumbnail_portrait.jpg?t=${Date.now()}" alt="Portrait Thumbnail">`;
+      } else {
+        qs('thumbPortrait').innerHTML = `<span class="muted" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">Missing</span>`;
+      }
+      if (artifacts.thumbnail_landscape.exists) {
+        qs('thumbLandscape').innerHTML = `<img src="/output/thumbnail_landscape.jpg?t=${Date.now()}" alt="Landscape Thumbnail">`;
+      } else {
+        qs('thumbLandscape').innerHTML = `<span class="muted" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">Missing</span>`;
+      }
+      
+      // 2. Videos
+      if (artifacts.short_video.exists) {
+        qs('videoBoxShort').innerHTML = `<video src="/output/news_video.mp4" controls preload="metadata"></video>`;
+      } else {
+        qs('videoBoxShort').innerHTML = `<span class="muted" style="display:flex;justify-content:center;align-items:center;height:100%">Render short video format to preview</span>`;
+      }
+      if (artifacts.long_video.exists) {
+        qs('videoBoxLong').innerHTML = `<video src="/output/news_video_long.mp4" controls preload="metadata"></video>`;
+      } else {
+        qs('videoBoxLong').innerHTML = `<span class="muted" style="display:flex;justify-content:center;align-items:center;height:100%">Render long video format to preview</span>`;
+      }
+      
+      // 3. YouTube metadata pre-fill
+      if (artifacts.metadata.exists) {
+        loadMetadata();
+      }
+    }
+    
+    async function loadMetadata() {
+      const r = await fetch(`/api/metadata?channel=${selected}`);
+      const data = await r.json();
+      if(data.title && qs('ytTitleInput').value === '') {
+        qs('ytTitleInput').value = data.title;
+        qs('ytDescInput').value = data.description;
+        qs('ytTagsInput').value = (data.hashtags || []).join(', ');
+      }
+    }
+    
+    qs('uploadBtn').onclick = async () => {
+      qs('uploadBtn').disabled = true;
+      qs('uploadBtn').textContent = 'Uploading...';
+      const r = await fetch('/api/upload', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          channel: selected,
+          format: qs('format').value,
+          title: qs('ytTitleInput').value,
+          description: qs('ytDescInput').value,
+          tags: qs('ytTagsInput').value
+        })
+      });
+      const data = await r.json();
+      qs('uploadBtn').disabled = false;
+      qs('uploadBtn').textContent = 'Publish to YouTube';
+      if(data.success) {
+        alert(`Successfully Published! Video URL: ${data.url}`);
+        qs('oauthStatus').innerHTML = `CONNECTED | Uploaded: <a href="${data.url}" target="_blank" style="color:var(--accent)">${data.video_id}</a>`;
+      } else {
+        alert(`Upload Failed: ${data.error}`);
+      }
+    };
+    
+    // settings
+    async function loadSettings() {
+      const r = await fetch('/api/settings');
+      const env = await r.json();
+      qs('envFields').innerHTML = Object.entries(env).map(([k,v]) => `
+        <div style="margin-bottom:12px">
+          <label style="color:white;font-weight:700">${k}</label>
+          <input type="text" id="setting_${k}" value="${v}" style="background:rgba(255,255,255,0.02)">
+        </div>
+      `).join('');
+    }
+    
+    qs('saveSettingsBtn').onclick = async () => {
+      const inputs = document.querySelectorAll('[id^="setting_"]');
+      const payload = {};
+      inputs.forEach(ip => {
+        const key = ip.id.replace('setting_', '');
+        payload[key] = ip.value;
+      });
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      alert('Settings saved successfully!');
+    };
+    
+    // analytics integration
+    async function loadAnalyticsData(){
+      try {
+        const r = await fetch(`/api/analytics?channel=${selected}`);
+        const data = await r.json();
+        
+        const videos = data.videos || [];
+        const curve = data.retention_curve || [];
+        
+        // Calculate totals/averages
+        let totalViews = 0, totalSubs = 0, sumCtr = 0;
+        videos.forEach(v => {
+          totalViews += v.views;
+          totalSubs += v.subscribers_gained || 0;
+          sumCtr += v.ctr;
+        });
+        const avgCtr = videos.length > 0 ? (sumCtr / videos.length).toFixed(2) : "0.0";
+        
+        qs('metricImpressions').textContent = (totalViews * 12).toLocaleString(); // Estimated impressions
+        qs('metricViews').textContent = totalViews.toLocaleString();
+        qs('metricCTR').textContent = avgCtr + "%";
+        qs('metricSubs').textContent = "+" + totalSubs;
+        
+        // Draw Retention Curve chart
+        qs('chartRetention').innerHTML = curve.map(pt => `
+          <div class="chart-bar" style="height:${pt.p}%">
+            <div class="chart-bar-value">${pt.p}%</div>
+            <div class="chart-label" style="position:absolute;bottom:-25px;left:50%;transform:translateX(-50%)">${pt.t}s</div>
+          </div>
+        `).join('');
+        
+        // Render recent videos
+        if (videos.length === 0) {
+          qs('recentVideosList').innerHTML = '<span class="muted">No video analytics loaded.</span>';
+        } else {
+          qs('recentVideosList').innerHTML = videos.map(v => `
+            <div class="artifact" style="font-size:12px; margin-bottom:8px">
+              <div style="display:flex;flex-direction:column;gap:2px">
+                <strong style="color:var(--accent)">${v.category.toUpperCase()} (${v.format})</strong>
+                <span class="muted" style="font-size:10px;text-overflow:ellipsis;overflow:hidden;max-width:180px">${v.video_url}</span>
+              </div>
+              <div style="text-align:right">
+                <span class="ok" style="display:block">${v.views.toLocaleString()} views</span>
+                <span class="muted" style="font-size:10px">CTR: ${v.ctr}%</span>
+              </div>
+            </div>
+          `).join('');
+        }
+      } catch (err) {
+        console.error("Failed to load analytics: ", err);
+      }
+    }
+
+    qs('syncAnalyticsBtn').onclick = async () => {
+      qs('syncAnalyticsBtn').disabled = true;
+      qs('syncAnalyticsBtn').textContent = 'Syncing...';
+      try {
+        const r = await fetch('/api/analytics/sync', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({channel: selected})
+        });
+        const res = await r.json();
+        qs('syncAnalyticsBtn').disabled = false;
+        qs('syncAnalyticsBtn').textContent = 'Sync Analytics Now';
+        if (res.success) {
+          alert(`Sync complete! Synced ${res.synced} videos.`);
+          loadAnalyticsData();
+        } else {
+          alert(`Sync failed: ${res.error}`);
+        }
+      } catch (e) {
+        qs('syncAnalyticsBtn').disabled = false;
+        qs('syncAnalyticsBtn').textContent = 'Sync Analytics Now';
+        alert(`Sync failed: ${e}`);
+      }
+    };
+    
+    async function poll(){
+      try {
+        const r = await fetch('/api/status');
+        renderState(await r.json());
+      } catch(e) {}
+      setTimeout(poll, 1500);
+    }
+    
+    qs('runBtn').onclick = async () => {
+      // Clear script text area to allow fresh generation
+      qs('scriptTextarea').value = '';
+      qs('ytTitleInput').value = '';
+      await fetch('/api/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          channel: selected,
+          category: qs('category').value,
+          format: qs('format').value,
+          stage: qs('stageTarget').value,
+          test_mode: qs('testMode').checked,
+          no_clean: qs('noClean').checked
+        })
+      });
+      poll();
+    };
+    
+    tabs.forEach(btn => btn.onclick = () => {
+      tabs.forEach(b => b.classList.remove('active')); btn.classList.add('active');
+      document.querySelectorAll('.view').forEach(v => v.hidden = true);
+      qs(btn.dataset.tab).hidden = false;
+      if (btn.dataset.tab === 'analytics') loadAnalyticsData();
+      if (btn.dataset.tab === 'settings') loadSettings();
+    });
+    
+    async function load(){
+      const apiKeyInput = qs('uiApiKeyInput');
+      if (apiKeyInput) {
+        apiKeyInput.value = localStorage.getItem('news_ui_api_key') || '';
+        apiKeyInput.oninput = () => {
+          localStorage.setItem('news_ui_api_key', apiKeyInput.value.trim());
+        };
+      }
+
+      const r = await fetch('/api/channels'); profiles = await r.json();
+      renderAll();
+      poll();
+    }
+    
+    load();
+  </script>
+</body>
+</html>

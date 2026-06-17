@@ -7,7 +7,7 @@
 
 import sys
 
-# PHASE 4: Environment lock
+# Environment lock
 import os as _os_env_check
 if "VIRTUAL_ENV" not in _os_env_check.environ and ".venv" not in sys.executable and "venv" not in sys.executable:
     print(f"[WARN] Running outside a virtual environment: {sys.executable}")
@@ -17,31 +17,19 @@ print(f"[ENV OK] {sys.executable}")
 import heapq
 import re
 import spacy
-import random
 import requests
 
-def clean_caption_text(text):
-    text = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', text)
-    text = re.sub(r'\b\d+[A-Z]\b', '', text)
-    text = re.sub(r'[^\x00-\x7F]+', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-def fix_streaming_duplicates(text):
-    words = text.split()
-    cleaned = []
-    
-    i = 0
-    while i < len(words):
-        # If current word is prefix of next -> skip current
-        if i < len(words) - 1 and words[i+1].startswith(words[i]):
-            i += 1
-            continue
-            
-        cleaned.append(words[i])
-        i += 1
-        
-    return " ".join(cleaned)
+from utils import clean_caption_text
+from config import (
+    OLLAMA_URL,
+    OLLAMA_NUM_PREDICT,
+    OLLAMA_TEMPERATURE,
+    OLLAMA_TOP_P,
+    OLLAMA_REPEAT_PENALTY,
+    SCRIPT_MIN_INPUT_CHARS,
+    SCRIPT_OOV_THRESHOLD,
+    SCRIPT_MIN_VERBLESS_SENTENCES,
+)
 
 def remove_exact_duplicates(text):
     words = text.split()
@@ -64,17 +52,19 @@ def validate_script(script, target_words):
     if len(words) < int(target_words * 0.7):
         return False
 
-    first_line = script.split(".")[0]
+    first_line = re.split(r'[.!।?]', script)[0]
     if len(first_line.split()) < 6:
         return False
 
     if first_line.lower().startswith(("today", "yesterday", "president")):
         return False
 
-    if not any(char.isupper() for char in first_line if char.isalpha()):
-        return False
+    has_devanagari = bool(re.search(r'[\u0900-\u097F]', first_line))
+    if not has_devanagari:
+        if not any(char.isupper() for char in first_line if char.isalpha()):
+            return False
 
-    # PHASE 14: Reject scripts full of generic filler phrases
+    # Reject scripts full of generic filler phrases
     _FILLER_PHRASES = [
         "global angle", "power of nature", "power of natural",
         "highlights the need", "serves as a reminder",
@@ -92,6 +82,30 @@ def validate_script(script, target_words):
     if _filler_count >= 2:
         print(f"[ScriptGen] WARNING:️  Script has {_filler_count} generic filler sentences -- regenerating")
         return False
+
+    if not has_devanagari:
+        # Sentence completeness — reject scripts where >2 sentences lack a verb
+        _COMMON_VERBS = {
+            "is", "are", "was", "were", "has", "have", "had", "been",
+            "killed", "died", "dead", "attacked", "struck", "destroyed",
+            "said", "says", "warned", "announced", "confirmed", "reported",
+            "arrested", "detained", "launched", "fired", "wounded", "injured",
+            "signed", "passed", "blocked", "suspended", "imposed",
+            "called", "urged", "demanded", "declared", "claimed",
+            "hit", "left", "caused", "reached", "found", "made", "took",
+            "came", "went", "saw", "told", "began", "led", "set", "cut",
+            "broke", "fell", "rose", "grew", "ran", "sent", "put", "got",
+            "brought", "held", "stood", "lost", "won", "met", "built",
+            "shows", "remains", "continues", "threatens", "faces",
+            "spreads", "warns", "kills", "destroys", "marks", "raises",
+        }
+        _raw_sentences = [s.strip() for s in script.split('.') if s.strip() and len(s.strip().split()) >= 3]
+        _verbless = sum(1 for s in _raw_sentences if not any(
+            tok.lower().rstrip(",.;:") in _COMMON_VERBS for tok in s.split()
+        ))
+        if _verbless > SCRIPT_MIN_VERBLESS_SENTENCES:
+            print(f"[ScriptGen] WARNING: {_verbless} sentences lack verbs -- regenerating")
+            return False
 
     return True
 
@@ -120,7 +134,7 @@ def _script_relevance_ok(script: str, original_text: str, doc) -> bool:
         if token.is_alpha and not token.is_stop and len(token.lemma_) > 3
     ]
 
-    # PHASE 17: Common news vocabulary words are never OOV -- they appear in
+    # Common news vocabulary words are never OOV -- they appear in
     # any news article regardless of topic (analysts, warn, risk, stark, etc.)
     _COMMON_NEWS_VOCAB = {
         "warn", "warned", "warning", "stark", "risk", "risks", "risky",
@@ -166,7 +180,7 @@ def _script_relevance_ok(script: str, original_text: str, doc) -> bool:
     }
     _COMMON_NEWS_VOCAB |= _GEO_DEMONYMS
 
-    # PHASE 21: Additional generic news words that Ollama commonly uses and are
+    # Additional generic news words that Ollama commonly uses and are
     # legitimately present in any conflict/politics/disaster article. These were
     # confirmed OOV false-positives from the Ukraine/Russia log:
     # "30 out-of-article terms: spark, chaos, shot, city, hard, area, eyewitness, scene"
@@ -202,10 +216,9 @@ def _script_relevance_ok(script: str, original_text: str, doc) -> bool:
     oov = [token for token in script_tokens
            if token not in article_tokens and token not in _COMMON_NEWS_VOCAB]
 
-    # PHASE 21: Raised threshold from 18 to 20 \u2014 the Russia/Ukraine story was
-    # rejected at 30 OOV terms but those were all legitimate news words.
-    # Threshold was already raised 5\u219212 in Phase 17, 12\u219218 later. Now 20.
-    if len(oov) > 20:   # was 18
+    # Raised threshold from 28 to 32 — Ollama uses legitimate news
+    # vocabulary not verbatim in article.
+    if len(oov) > SCRIPT_OOV_THRESHOLD:
         print(f"[ScriptGen] Relevance fail: {len(oov)} out-of-article terms: "
               f"{', '.join(oov[:8])}")
         return False
@@ -216,10 +229,34 @@ def _script_relevance_ok(script: str, original_text: str, doc) -> bool:
     ]
     if article_entities:
         hits = sum(1 for ent in set(article_entities) if ent in script.lower())
-        # PHASE 17: Reduced from 2 to 1 -- a single named entity is enough
-        # to confirm the script is grounded in the article
-        if hits < 1:
-            print(f"[ScriptGen] Relevance fail: no core article entities found in script")
+
+        # Count demonyms/nationality adjectives as valid entity hits.
+        # Ollama writes "Ukrainian" instead of "Ukraine" for variety — that is valid.
+        _DEMONYM_MAP = {
+            "ukrainian": ["ukraine", "ukrainian"],
+            "russian": ["russia", "russian"],
+            "iranian": ["iran", "iranian"],
+            "israeli": ["israel", "israeli"],
+            "indian": ["india", "indian"],
+            "american": ["united states", "america", "american"],
+            "british": ["britain", "uk", "british"],
+            "chinese": ["china", "chinese"],
+        }
+        _script_lower = script.lower()
+        _orig_lower = original_text.lower()
+        _demonym_hit = any(
+            dem in _script_lower
+            for dem_list in _DEMONYM_MAP.values()
+            for dem in dem_list
+            if dem in _orig_lower
+        )
+        if _demonym_hit:
+            hits += 1  # demonym usage counts as a valid article entity match
+
+        # Relax entity check constraint to 0 for shorter articles (< 150 words)
+        min_hits = 0 if len(original_text.split()) < 150 else 1
+        if hits < min_hits:
+            print(f"[ScriptGen] Relevance fail: named entities in script ({hits}) < minimum required ({min_hits})")
             return False
         print(f"[ScriptGen] Relevance OK: {hits} article entities confirmed in script")
 
@@ -322,9 +359,13 @@ def detect_context(doc) -> str:
         ],
         "serious": [
             (["earthquake", "flood", "tsunami", "wildfire", "hurricane",
-              "death toll", "disaster", "famine", "epidemic", "pandemic"], 3),
+              "death toll", "disaster", "famine", "epidemic", "pandemic",
+              "outbreak", "virus", "ebola", "mpox", "infection", "infections",
+              "cases", "illness", "deaths", "sick", "patient", "patients"], 3),
             (["crisis", "rescue", "evacuation", "emergency", "storm",
-              "tornado", "avalanche", "landslide"], 2),
+              "tornado", "avalanche", "landslide",
+              "health", "quarantine", "hospital", "hospitals", "medical",
+              "clinics", "transmission", "vaccine", "vaccines", "who"], 2),
         ],
         "politics": [
             (["prime minister", "president", "election", "parliament",
@@ -336,6 +377,14 @@ def detect_context(doc) -> str:
             (["win", "victory", "record", "celebration", "award",
               "milestone", "breakthrough", "historic"], 2),
             (["success", "achievement", "champion", "triumph"], 1),
+        ],
+        "sports": [
+            (["football", "soccer", "match", "goal", "goals", "transfer",
+              "player", "champions league", "premier league", "world cup",
+              "la liga", "stadium", "tournament", "defeat", "scoring", "scored",
+              "injury", "signing", "fifa", "uefa"], 2),
+            (["coach", "manager", "trophy", "league", "club", "team", "cup",
+              "game", "referee", "striker", "midfielder", "defender", "goalkeeper"], 1),
         ],
         "informative": [
             (["artificial intelligence", "space", "nasa", "innovation",
@@ -432,8 +481,10 @@ def _normalize_ollama_output(text: str) -> str:
         # Keep the line if: has terminal punctuation, OR > 8 words, OR contains news signals
         _first_words = first.lower().split()
         _has_news_signal = any(w.rstrip(".,;:") in _NEWS_SIGNAL_WORDS for w in _first_words)
+        _has_devanagari = bool(re.search(r'[\u0900-\u097F]', first))
         _looks_like_header = (
-            not first.endswith((".", "!", "?", '"', "'"))
+            not _has_devanagari
+            and not first.endswith((".", "!", "?", '"', "'"))
             and len(_first_words) <= 8
             and not _has_news_signal
             and not any(w[0].isupper() for w in _first_words[1:])  # no mid-sentence capitals
@@ -444,18 +495,27 @@ def _normalize_ollama_output(text: str) -> str:
             break
     text = "\n".join(lines).strip()
 
-    # PHASE 14: Strip structural labels Llama3 sometimes inserts despite instructions
+    # Strip structural labels Llama3 sometimes inserts despite instructions
     import re as _label_re
-    # Patterns like "Global angle:", "Hook:", "1. Hook --", "Context:", etc.
+    
+    # 1. Strip labels at the start of a line
     text = _label_re.sub(
-        r'(?m)^(?:Hook|Context|Scale|Location|Eyewitness|Impact|Response|'
-        r'Ongoing|Close|Global angle|Background|Key fact|Reaction|'
-        r'Escalation|Closing|Summary|Narrative|Body|Intro|Outro)'
-        r'\s*(?:--|[-:])\s*',
-        '',
-        text
+        r'(?i)(?m)^(?:\[|\b)(?:Hook|Urgent Hook|Context|Scale|Location|Eyewitness|Impact|Response|'
+        r'Ongoing|Close|Global angle|Background|Key fact|Reaction|Core News Event|'
+        r'Official Statements(?: and Direct Quotes)?|Direct Quotes|'
+        r'Geopolitical Fallout(?: and Contextual Backstory)?|Contextual Backstory|'
+        r'Anchored Engagement(?: Call-To-Action)?|Call-To-Action|'
+        r'Escalation|Closing|Summary|Narrative|Body|Intro|Outro)(?:\]|\b)'
+        r'\s*(?:--|[-:])?\s*', '', text
     )
-    # Strip numbered prefixes: "1. " "2) " "1:" etc.
+    
+    # 2. Strip bracketed labels hiding mid-paragraph
+    text = _label_re.sub(
+        r'(?i)\[(?:Hook|Urgent Hook|Core News Event|Official Statements.*?|'
+        r'Geopolitical Fallout.*?|Anchored Engagement.*?)\]\s*[-:]?\s*', '', text
+    )
+
+    # 3. Strip numbered prefixes: "1. " "2) " "1:" etc.
     text = _label_re.sub(r'(?m)^\s*\d{1,2}[.):\-]\s+', '', text)
     # Clean double spaces after stripping
     text = _label_re.sub(r'\s{2,}', ' ', text).strip()
@@ -464,22 +524,23 @@ def _normalize_ollama_output(text: str) -> str:
 
 
 def _run_ollama_model(prompt: str, model: str) -> tuple[str, str, int]:
-    url = "http://localhost:11434/api/generate"
+    url = OLLAMA_URL
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
         "options": {
-            "num_predict": 600,    # was 512; 600 prevents mid-sentence cutoff
-            "temperature": 0.58,   # slightly lower = more deterministic completions
-            "top_p": 0.85,
-            "repeat_penalty": 1.15,  # prevents repeating same location names
+            "num_predict": OLLAMA_NUM_PREDICT,
+            "temperature": OLLAMA_TEMPERATURE,
+            "top_p": OLLAMA_TOP_P,
+            "repeat_penalty": OLLAMA_REPEAT_PENALTY,
             "stop": ["\n\n\n", "Note:", "Note that", "Remember:", "Disclaimer:"],
         }
     }
 
     try:
-        response = requests.post(url, json=payload, timeout=120)
+        print(f"[Ollama] Generating text with model '{model}' (this can take 1-3 minutes on CPU)...", flush=True)
+        response = requests.post(url, json=payload, timeout=300)
         if response.status_code != 200:
             return "", f"HTTP {response.status_code}", response.status_code
         data = response.json()
@@ -489,17 +550,33 @@ def _run_ollama_model(prompt: str, model: str) -> tuple[str, str, int]:
         return "", str(e), 1
 
 
-def generate_script_with_ollama(input_text, target_words, context: str = "neutral"):
-    HOOK_INSTRUCTIONS = {
-        "tense": "HOOK RULE: Create URGENCY and TENSION. Communicate immediate danger or crisis.",
-        "serious": "HOOK RULE: Communicate GRAVITY and human cost. Lead with the most impactful fact.",
-        "politics": "HOOK RULE: Communicate STAKES and SIGNIFICANCE without drama. Lead with key decision makers.",
-        "informative": "HOOK RULE: Spark CURIOSITY about a discovery or development. Lead with the most surprising fact.",
-        "positive": "HOOK RULE: Communicate ACHIEVEMENT and SIGNIFICANCE. Lead with the milestone.",
-        "neutral": "HOOK RULE: Be CLEAR and DIRECT. State the news immediately.",
-    }
+def generate_script_with_ollama(input_text, target_words, context: str = "neutral", top_performing_templates: list = None, channel_key: str = "newscup"):
+    # Force deep-dive word count (200-300 words) for premium news broadcast
+    target_words = max(200, min(target_words, 260))
 
-    hook_instruction = HOOK_INSTRUCTIONS.get(context, HOOK_INSTRUCTIONS["neutral"])
+    template_block = ""
+    if top_performing_templates:
+        template_block = "SUCCESSFUL PAST SCRIPTS FOR REFERENCE:\n"
+        for idx, item in enumerate(top_performing_templates, 1):
+            template_block += f"Example {idx} (Retention Score: {item.get('retention', 0.0)}%):\n"
+            template_block += f"Hook: {item.get('hook_text', '')}\n"
+            template_block += f"Script: {item.get('script_text', '')}\n"
+            template_block += "-" * 30 + "\n"
+        template_block += "STUDY THE ABOVE EXAMPLES. Write your new script to mirror the pacing, structure, and direct styling that made them successful.\n\n"
+
+    # Fetch hook retention traits for reference
+    try:
+        from correlation_engine import CorrelationEngine
+        hook_traits = CorrelationEngine.get_hook_retention_traits(channel_key, limit=3)
+        if hook_traits:
+            hook_traits_block = "HIGH-RETENTION HOOK EXAMPLES FOR REFERENCE:\n"
+            for idx, trait in enumerate(hook_traits, 1):
+                hook_traits_block += f"Hook {idx} (Hook Retention Ratio: {trait.get('hook_retention_ratio', 0.0):.1%}):\n"
+                hook_traits_block += f"  \"{trait.get('hook_text', '')}\"\n"
+            hook_traits_block += "STUDY THE ABOVE HOOK EXAMPLES. Your new script's first sentence (the Urgent Hook) must mimic their style, pacing, and vocabulary to capture viewer attention immediately in the first 3 seconds.\n\n"
+            template_block = hook_traits_block + template_block
+    except Exception as e:
+        print(f"[ScriptGen] Could not fetch hook retention traits: {e}")
 
     # -- Extract named entities from input_text for injection -------------
     import re as _re
@@ -516,101 +593,53 @@ def generate_script_with_ollama(input_text, target_words, context: str = "neutra
     if _gpes:
         _entity_block += f"LOCATIONS: {', '.join(_gpes)}\n"
 
-    # Dynamic structures based on context
-    if context in ("tense", "serious"):
-        extraction_instruction = (
-            "EXTRACT THESE FROM THE ARTICLE (use them -- do not invent):\n"
-            "- Exact death/casualty numbers with specific locations\n"
-            "- Named officials and their exact actions/quotes\n"
-            "- Specific incident details (what happened, where, how)\n"
-            "- Any rescue operations or government response\n"
-            "- Any warnings or ongoing risks mentioned"
+    if context == "sports":
+        style_prompt = (
+            "You are writing a highly engaging, viral football/sports news narration script (200 to 300 words) for YT Shorts, Reels, and TikTok.\n"
+            "Your style is fast-paced, high-retention, and captivating, focusing on spotlight players, key matches, transfers, or legendary moments.\n\n"
+            "ONLY use facts from the ARTICLE below. Do NOT invent any new people, numbers, events, claims, or details.\n\n"
+            "MANDATORY NARRATIVE STRUCTURE:\n"
+            "You MUST structurally layer the script exactly into the following five parts, sequentially:\n"
+            "1. [Urgent Hook]: Grab attention immediately in the first 3 seconds with a shocking or explosive headline fact, player stat, or transfer rumor.\n"
+            "2. [Core News Event]: State the central news event, matches, teams, and players involved.\n"
+            "3. [Official Statements/Direct Quotes]: Provide statements, social posts, or statistics. You MUST tag this evidence explicitly using string markers in the text output:\n"
+            "   - Wrap direct quotes in: [QUOTE: \"exact quote text\"]\n"
+            "   - Wrap social posts/tweets in: [TWEET: \"@username: post content\"]\n"
+            "   - Wrap official report/statistics in: [DOCUMENT: \"exact fact or statistical data\"]\n"
+            "4. [Geopolitical Fallout/Contextual Backstory]: Explain the significance, team standings, player records, or broader impact on the league.\n"
+            "5. [Anchored Engagement Call-To-Action]: Provide a direct, sports-focused CTA inviting viewers to subscribe and comment on their prediction or favorite player.\n\n"
         )
-        structure_instruction = (
-            "WRITE 8 COMPLETE SENTENCES following this EXACT structure:\n"
-            "1. HOOK -- One shocking fact or number that grabs attention immediately\n"
-            "2. SCALE -- The full scope of damage or conflict scale (deaths, locations, destruction)\n"
-            "3. LOCATION -- The hardest-hit area with its specific casualty count\n"
-            "4. EYEWITNESS -- A specific person, their story, or a vivid detail from the article\n"
-            "5. IMPACT -- What is destroyed, cut off, or damaged (infrastructure, bridges, safety)\n"
-            "6. RESPONSE -- Official action: what the government, military, or emergency services did or said\n"
-            "7. ONGOING -- Current risk, rescue operations, or what is happening right now\n"
-            "8. CLOSE -- Powerful final line that gives scale or stakes"
-        )
-    elif context == "politics":
-        extraction_instruction = (
-            "EXTRACT THESE FROM THE ARTICLE (use them -- do not invent):\n"
-            "- Key political leaders/officials and their exact quotes/positions\n"
-            "- Specific details of the bill, policy, decision, or agreement\n"
-            "- The goals or stated reasons for this political move\n"
-            "- Key reactions, criticisms, or support from opposing groups\n"
-            "- Ongoing debates, implementation timelines, or next steps"
-        )
-        structure_instruction = (
-            "WRITE 8 COMPLETE SENTENCES following this EXACT structure:\n"
-            "1. HOOK -- Surprising political development or key decision that grabs attention immediately\n"
-            "2. CONTEXT -- The background of the debate, policy, or key players involved\n"
-            "3. KEY DECISION -- The specific policy, vote, law, or agreement reached\n"
-            "4. IMPACT -- Who this directly affects or what changes immediately under this decision\n"
-            "5. REACTION -- Key statements from opposition, critics, or public sentiment mentioned\n"
-            "6. OFFICIAL RESPONSE -- Official defense, justification, or state action by authorities\n"
-            "7. ONGOING -- Legislative debate, next implementation steps, or upcoming votes\n"
-            "8. CLOSE -- Powerful final line summarizing the long-term political significance or future outlook"
-        )
-    else:  # positive, informative, neutral, general
-        extraction_instruction = (
-            "EXTRACT THESE FROM THE ARTICLE (use them -- do not invent):\n"
-            "- Key milestones, scientific achievements, or space discoveries\n"
-            "- Specific details of the technology, vehicle, system, or development\n"
-            "- The scientific or technological context of the breakthrough\n"
-            "- Quotes or actions from scientists, researchers, leaders, or creators\n"
-            "- Public reaction, expert analysis, or the immediate roadmap"
-        )
-        structure_instruction = (
-            "WRITE 8 COMPLETE SENTENCES following this EXACT structure:\n"
-            "1. HOOK -- The major achievement, discovery, or milestone that grabs attention immediately\n"
-            "2. CONTEXT -- The background of this development or why this is a major breakthrough\n"
-            "3. DETAILS -- Specific details of the launch, technology, discovery, or event\n"
-            "4. IMPACT -- How this changes the field, industry, daily life, or public knowledge\n"
-            "5. KEY FIGURE -- Specific action or quote from key leaders, scientists, or creators in the article\n"
-            "6. GLOBAL RESPONSE -- Expert, public, or global reaction to this announcement\n"
-            "7. NEXT STEPS -- What happens next or the immediate roadmap/ongoing development\n"
-            "8. CLOSE -- Powerful final line summarizing the long-term potential or future significance"
+    else:
+        style_prompt = (
+            "You are writing a comprehensive, deep-dive global news broadcast narration script (200 to 300 words).\n"
+            "Your style is highly authoritative, premium, and professional -- like a BBC or Sky News anchor.\n\n"
+            "ONLY use facts from the ARTICLE below. Do NOT invent any new people, numbers, events, claims, or details.\n\n"
+            "MANDATORY NARRATIVE STRUCTURE:\n"
+            "You MUST structurally layer the script exactly into the following five parts, sequentially:\n"
+            "1. [Urgent Hook]: Grab attention immediately with an urgent, specific headline fact or major breaking development.\n"
+            "2. [Core News Event]: State the central news event, locations, key actors, and core actions.\n"
+            "3. [Official Statements/Direct Quotes]: Provide official statements, social media posts, or document evidence. You MUST tag this evidence explicitly using string markers in the text output:\n"
+            "   - Wrap direct quotes in: [QUOTE: \"exact quote text\"]\n"
+            "   - Wrap social posts/tweets in: [TWEET: \"@username: post content\"]\n"
+            "   - Wrap official report/statistics in: [DOCUMENT: \"exact fact or statistical data\"]\n"
+            "4. [Geopolitical Fallout/Contextual Backstory]: Explain the history, underlying tensions, debate, or broader significance of this event.\n"
+            "5. [Anchored Engagement Call-To-Action]: Provide a direct CTA inviting viewers to subscribe and comment on the situation.\n\n"
         )
 
     prompt = (
-        "You are writing a 60-second YouTube Shorts news narration. "
-        "Your job is to make the viewer feel like they're THERE -- urgent, specific, vivid.\n\n"
-        "ONLY use facts from the ARTICLE below. Do NOT invent any new people, numbers, events, claims, places, or details.\n"
-        "If the article does not mention an item, do not add it. If it is not about an earthquake or disaster, do not mention one.\n\n"
-        "MANDATORY: Use ALL of these real names and numbers from the article:\n"
-        f"{_entity_block}\n"
-        f"{extraction_instruction}\n\n"
-        f"{structure_instruction}\n\n"
+        f"{style_prompt}"
+        "MANDATORY ENTITY GROUNDING RULES:\n"
+        "- Do not use any named entities that are not in the names/locations block below.\n"
+        f"{_entity_block}\n\n"
         "STRICT RULES:\n"
-        "- EVERY sentence must name a SPECIFIC place, person, or number from the article\n"
-        "- Every sentence must be GRAMMATICALLY COMPLETE: subject + verb + complete object.\n"
-        "- NEVER end a sentence on: a preposition (to/of/in/on/by/for), "
-        "an article (a/an/the), a conjunction (and/but/or), "
-        "a bare adjective (public/private/official/local), "
-        "or an infinitive verb (to reduce/to increase/to prevent).\n"
-        "- If you cannot complete a sentence, START A NEW ONE instead of trailing off.\n"
-        "- Every sentence must end with a full stop after a NOUN or ADVERB, never after a VERB.\n"
-        "- NO vague lines like 'global angle', 'power of nature', 'experts warn'\n"
-        "- NO section labels or headers like '1.' '2.' 'Hook:' 'Context:'\n"
-        "- NO sentence starting with: As / While / Although / Despite / Following / Amid\n"
-        "- NO sentence ending with: a preposition / an adjective / 'and' / 'leaving'\n"
-        "- Each sentence: subject + verb + specific object. 10-14 words.\n"
-        "- Write like a BBC anchor reading breaking news, not a textbook\n"
-        "- Use present or past tense -- never passive voice\n\n"
-        f"{hook_instruction}\n\n"
-        f"LENGTH: {target_words} to {target_words + 40} words total.\n\n"
-        "RETURN ONLY the 8 narration sentences -- no labels, no headers, no preamble.\n\n"
+        "- Every single sentence must be grammatically complete (subject + verb + specific object).\n"
+        "- Never end a sentence on a preposition (to, of, in, on, by, for), a conjunction (and, but, or), or a loose adjective.\n"
+        "- Do not output any meta-commentary, headers, section labels (such as '[Urgent Hook]' or '1.'), numbering, or notes. Output ONLY the raw script text with the source tags embedded.\n"
+        "- Avoid passive voice. Speak with confident authority.\n\n"
+        f"LENGTH: 200 to 300 words total.\n\n"
+        f"{template_block}"
         f"ARTICLE:\n{input_text}"
     )
-
-
-
 
     model_candidates = ["llama3"]
 
@@ -622,6 +651,73 @@ def generate_script_with_ollama(input_text, target_words, context: str = "neutra
                 print(f"[Ollama] Using model: {model}")
                 return normalized
     return ""
+
+def generate_editorial_close(
+    headline: str, 
+    context: str, 
+    script: str
+) -> str:
+    """
+    Generate one original editorial closing sentence.
+    This sentence must NOT be based on article facts.
+    It must be original analysis or historical perspective.
+    This is what separates The News Cup from AI slop.
+    """
+    prompt = (
+        "You are a senior news editor writing a single closing sentence "
+        "for a news broadcast. This sentence is editorial commentary — "
+        "your channel's perspective on what this news means.\n\n"
+        
+        "RULES FOR THIS SENTENCE:\n"
+        "- It must NOT restate any fact already in the script\n"
+        "- It must offer an original perspective, historical parallel, "
+        "or consequence prediction\n"
+        "- It must be confident and direct — no hedging words like "
+        "'perhaps', 'might', 'could be', 'some say'\n"
+        "- It must be 12-18 words long\n"
+        "- It must start with one of these structures:\n"
+        "  'History suggests that...'\n"
+        "  'For [affected group], this means...'\n"
+        "  'This marks a turning point in...'\n"
+        "  'What is clear is that...'\n"
+        "  'The pattern is unmistakable:'\n"
+        "- Do NOT use the words: complex, complicated, concerning, "
+        "significant, importantly, notably\n\n"
+        
+        f"NEWS CONTEXT: {context}\n"
+        f"HEADLINE: {headline}\n"
+        f"EXISTING SCRIPT SUMMARY: {script[:300]}\n\n"
+        "Write ONE editorial closing sentence only. "
+        "No preamble. No explanation."
+    )
+    
+    stdout, _, rc = _run_ollama_model(prompt, "llama3")
+    if not stdout:
+        # Fallback editorial closes by context
+        _FALLBACK_CLOSES = {
+            "war":      "The human cost of this conflict continues to "
+                        "be measured not in statistics, but in communities.",
+            "tense":    "History rarely rewards those who mistake "
+                        "aggression for strength.",
+            "politics": "The decisions made in the next 72 hours will "
+                        "define the next chapter of this story.",
+            "serious":  "What is clear is that the people bearing this "
+                        "burden had no say in creating it.",
+            "positive": "This marks the kind of turning point that "
+                        "looks obvious only in hindsight.",
+            "sports":   "In sports, the scoreboard changes, but the passion "
+                        "of the game remains constant.",
+        }
+        return _FALLBACK_CLOSES.get(context, 
+            "The story continues, and The News Cup will be watching.")
+    
+    result = _normalize_ollama_output(stdout).strip()
+    # Ensure it is one sentence only
+    first_sent = result.split(".")[0].strip()
+    if len(first_sent.split()) >= 8:
+        return first_sent + "."
+    return result
+
 
 def clean_tts_text(text):
     text = re.sub(r'\.{2,}', '.', text)
@@ -657,7 +753,16 @@ def _spacy_fallback_script(text: str, doc, context: str) -> str:
     """
     import heapq
 
-    sentences = [sent.text.strip() for sent in doc.sents if len(sent.text.split()) >= 6]
+    _BOILERPLATE_STARTERS = {
+        "sky news", "bbc news", "al jazeera", "ndtv", "times of india",
+        "politics, entertainment", "subscribe", "watch live", "follow us",
+        "download the", "for breaking news", "sign up",
+    }
+    sentences = [
+        sent.text.strip() for sent in doc.sents
+        if len(sent.text.split()) >= 6
+        and not any(sent.text.lower().strip().startswith(bp) for bp in _BOILERPLATE_STARTERS)
+    ]
     if not sentences:
         return text
 
@@ -690,10 +795,10 @@ def _spacy_fallback_script(text: str, doc, context: str) -> str:
     else:
         ordered = [s for s in sentences if s in top_sents]
 
-    # PHASE 14: Keep only sentences that are reasonable length for TTS
+    # Keep only sentences that are reasonable length for TTS
     ordered = [s for s in ordered if 6 <= len(s.split()) <= 20][:7]
 
-    # PHASE 18: Ensure the first sentence is a good hook (not a fragment or question)
+    # Ensure the first sentence is a good hook (not a fragment or question)
     # The first sentence must give full context: WHO did WHAT.
     if ordered:
         _hook_candidates = []
@@ -747,11 +852,23 @@ def _spacy_fallback_script(text: str, doc, context: str) -> str:
             return _clean(" ".join(_clean_sents))
         return _short_article_safe_script(text)
 
-    # For very short articles, avoid adding a generic hook that can become
-    # the only meaningful line in the script.
-    if len(sentences) <= 6:
-        return _clean(" ".join(ordered))
+    # Skip generic CONTEXT_HOOKS boilerplate if we have real sentences.
+    # "Developing story -- this is raising serious concerns." is useless filler.
+    # Only use a generic hook as absolute last resort when ordered is truly empty.
+    if ordered:
+        # First ordered sentence is a good hook (at least 8 words with a clear subject)
+        if len(ordered[0].split()) >= 8:
+            script = " ".join(ordered)
+            return _clean(script)
 
+        # First sentence is short — but if article has named entities, content is grounded
+        _ents = [e.text for e in doc.ents
+                 if e.label_ in ("GPE", "ORG", "PERSON", "NORP") and len(e.text) > 2][:3]
+        if _ents:
+            script = " ".join(ordered)
+            return _clean(script)
+
+    # ABSOLUTE LAST RESORT: ordered is empty — use generic hook so video has something
     CONTEXT_HOOKS = {
         "tense":       "Developing story -- this is raising serious concerns.",
         "serious":     "A significant situation is unfolding.",
@@ -761,9 +878,9 @@ def _spacy_fallback_script(text: str, doc, context: str) -> str:
         "neutral":     "Here is the latest news.",
     }
     hook = CONTEXT_HOOKS.get(context, "Here is the latest news.")
-
     script = hook + " " + " ".join(ordered)
     return _clean(script)
+
 
 
 def _fact_check_entities(script: str, original_text: str) -> str:
@@ -773,7 +890,7 @@ def _fact_check_entities(script: str, original_text: str) -> str:
     """
     original_lower = original_text.lower()
 
-    # Phase 9: Non-reverting fact checker.
+    # Non-reverting fact checker.
     # Keep the valid sentences and only remove those that fail verification.
     valid_sentences = []
     removed_count = 0
@@ -787,7 +904,7 @@ def _fact_check_entities(script: str, original_text: str) -> str:
         sent_entities = [e.text for e in sent_doc.ents if e.label_ in ("PERSON", "ORG") and len(e.text.split()) >= 2]
         
         for entity in sent_entities:
-            # Phase 13: Expanded allowlist for humanitarian and geopolitical entities
+            # Expanded allowlist for humanitarian and geopolitical entities
             _ALWAYS_VALID = {
                 # Geopolitical entities
                 "iran", "israel", "gaza", "russia", "ukraine", "us", "china",
@@ -825,7 +942,7 @@ def _fact_check_entities(script: str, original_text: str) -> str:
             words_to_check = [w.lower() for w in entity.split() if len(w) > 3]
             if words_to_check:
                 matches = sum(1 for w in words_to_check if w in original_lower)
-                # PHASE 13: Only flag as hallucination if NO words appear
+                # Only flag as hallucination if NO words appear
                 # in original. < 50% match is too aggressive for short articles.
                 if matches == 0:
                     is_hallucination = True
@@ -837,7 +954,7 @@ def _fact_check_entities(script: str, original_text: str) -> str:
         else:
             valid_sentences.append(sent)
 
-    # PHASE 12: Fact-checker threshold = 3 (was 6 -- too high, gutted short articles).
+    # Fact-checker threshold = 3 (was 6 -- too high, gutted short articles).
     # Never restore hallucinations just because few valid sentences remain.
     if len(valid_sentences) >= 3:
         print(f"[FACT CHECK] Keeping {len(valid_sentences)} clean sentences.")
@@ -915,21 +1032,54 @@ def _short_article_safe_script(text: str) -> str:
     return _clean(safe_text)
 
 
-def summarise(text: str) -> str:
+def _generate_hindi_script_with_ollama(text: str, target_sentences: int = 8) -> str:
+    prompt = (
+        "You are a senior Hindi TV news script writer.\n"
+        "Write a professional YouTube news narration in Hindi using Devanagari script.\n"
+        "Use only facts from the source story. Do not invent people, numbers, places, claims, or quotes.\n"
+        f"Write exactly {target_sentences} complete sentences. No labels, bullets, preamble, or explanation.\n"
+        "Sentence 1 must start with the most important fact. Keep the tone clear, serious, and broadcast-ready.\n"
+        "Make it understandable for Indian viewers and explain national or public impact when relevant.\n\n"
+        f"SOURCE STORY:\n{text[:3500]}\n\n"
+        "Hindi script:"
+    )
+    stdout, _, _ = _run_ollama_model(prompt, "llama3")
+    if not stdout:
+        return ""
+    script = _normalize_ollama_output(stdout)
+    script = re.sub(r"(?i)^(hindi script|script|output)\s*:\s*", "", script).strip()
+    return script
+
+
+def summarise(text: str, channel_profile=None, top_performing_templates: list = None) -> str:
     text = _clean(text)
     if not text: return ""
+
+    channel_key = channel_profile.key if channel_profile else "newscup"
+
+    if channel_profile and getattr(channel_profile, "language", "en") == "hi":
+        script = ""
+        for attempt in range(3):
+            script = _generate_hindi_script_with_ollama(text, target_sentences=8)
+            sentence_count = len([s for s in re.split(r"(?<=[.!?।])\s+", script) if s.strip()])
+            if script and len(script.split()) >= 45 and sentence_count >= 5:
+                print(f"[ScriptGen][Hindi] Generated {len(script.split())} words in {sentence_count} sentences")
+                return clean_caption_text(script)
+            print(f"[ScriptGen][Hindi] Attempt {attempt + 1} did not meet quality threshold")
+        print("[ScriptGen][Hindi] Falling back to extractive English source text; install/verify LLM Hindi output for production.")
+        return clean_caption_text(_short_article_safe_script(text))
 
     doc = nlp(text)
     context = detect_context(doc)
 
     target_words = calculate_target_words(text)
 
-    # PHASE 19: Minimum input length guard
+    # Minimum input length guard
     # If input < 300 chars, Ollama will hallucinate.
     # Instead: skip directly to extractive fallback on the available text,
     # with a warning that the video will be short.
     _input_chars = len(text.strip())
-    if _input_chars < 300:
+    if _input_chars < SCRIPT_MIN_INPUT_CHARS:
         print(f"[ScriptGen] Short input ({_input_chars} chars) — expanding via DDG search.")
         # Try to find supplementary content via web search
         _headline = ""
@@ -948,10 +1098,10 @@ def summarise(text: str) -> str:
         except Exception as _ddg_err:
             print(f"[ScriptGen] DDG expansion failed: {_ddg_err}")
 
-        # Re-run Ollama once with the expanded text if > 300 chars now
-        if len(_expanded) > 300:
+        # Re-run Ollama once with the expanded text if > SCRIPT_MIN_INPUT_CHARS now
+        if len(_expanded) > SCRIPT_MIN_INPUT_CHARS:
             _exp_doc = nlp(_expanded)
-            script = generate_script_with_ollama(_expanded, calculate_target_words(_expanded), context)
+            script = generate_script_with_ollama(_expanded, calculate_target_words(_expanded), context, top_performing_templates=top_performing_templates, channel_key=channel_key)
             if not script or not _script_relevance_ok(script, _expanded, _exp_doc):
                 script = _spacy_fallback_script(_expanded, _exp_doc, context)
         else:
@@ -967,8 +1117,17 @@ def summarise(text: str) -> str:
     script = ""
     for attempt in range(3):
         try:
-            script = generate_script_with_ollama(text, target_words, context=context)
+            script = generate_script_with_ollama(text, target_words, context=context, top_performing_templates=top_performing_templates, channel_key=channel_key)
             if validate_script(script, target_words) and _script_relevance_ok(script, text, doc):
+                # ── Parrot detection: reject if script is mostly raw article ──
+                _src_words  = set(text.lower().split())
+                _scr_words  = script.lower().split()
+                _overlap    = sum(1 for w in _scr_words if w in _src_words)
+                _parrot_pct = _overlap / max(len(_scr_words), 1)
+                if _parrot_pct > 0.80:
+                    print(f"[ScriptGen] Parrot detected ({_parrot_pct:.0%} overlap) on attempt {attempt + 1} -- retrying")
+                    script = ""
+                    continue
                 break
             print(f"[ScriptGen] WARNING: generated script failed structure/relevance check on attempt {attempt + 1}")
             script = ""
@@ -977,7 +1136,7 @@ def summarise(text: str) -> str:
             script = ""
 
     script = script.strip()
-    # PHASE 17: Only run relevance audit on Ollama-generated scripts.
+    # Only run relevance audit on Ollama-generated scripts.
     # Extractive scripts are by definition from the article -- no audit needed.
     _ollama_succeeded = bool(script)   # True if Ollama produced something
     if _ollama_succeeded and not _script_relevance_ok(script, text, doc):
@@ -986,10 +1145,54 @@ def summarise(text: str) -> str:
         # DO NOT re-run relevance audit on extractive output
         print("[ScriptGen] Using extractive fallback -- skipping relevance audit.")
 
-    # PHASE 17: Simplified fallback chain -- no redundant relevance checks on fallbacks
+    # If all 3 structured Ollama attempts failed, try a simplified prompt.
+    # The structured prompt is strict (8 labelled sections + entity rules) and sometimes
+    # triggers the relevance check. A simpler prompt has no strict structure and is more
+    # likely to produce groundable, usable output.
+    if not script:
+        print("[ScriptGen] Ollama produced nothing -- trying direct news prompt...")
+        _direct_prompt = (
+            f"Write a professional news broadcast script about the following story.\n"
+            f"Rules:\n"
+            f"- Write EXACTLY 8 complete sentences. No preamble. No labels.\n"
+            f"- Each sentence must name a specific person, place, or number.\n"
+            f"- Every sentence must start with a capital letter.\n"
+            f"- Write in active voice. Past or present tense only.\n"
+            f"- Start sentence 1 with the most important fact.\n"
+            f"- NO meta-commentary. Start writing the script immediately.\n\n"
+            f"NEWS STORY:\n{text[:2000]}\n\n"
+            f"Script (8 sentences, start now):"
+        )
+        _simple_out, _, _ = _run_ollama_model(_direct_prompt, "llama3")
+        if _simple_out:
+            _simple_out = _normalize_ollama_output(_simple_out)
+            # Extra guard: reject if first line is meta-commentary
+            _first_line = _simple_out.strip().split(".")[0].strip().lower()
+            _is_meta = any(
+                _first_line.startswith(p) for p in [
+                    "here are", "here is", "below", "the following",
+                    "i have", "as requested", "sure", "okay",
+                ]
+            )
+            if _is_meta:
+                # Strip the meta line and use what's left
+                _lines = [l.strip() for l in _simple_out.strip().split("\n") if l.strip()]
+                _real_lines = [
+                    l for l in _lines
+                    if not any(l.lower().startswith(p) for p in [
+                        "here are", "here is", "below", "the following",
+                        "i have", "as requested", "sure", "okay",
+                    ])
+                ]
+                _simple_out = " ".join(_real_lines)
+            if _simple_out and len(_simple_out.split()) >= 30:
+                print(f"[ScriptGen] Direct news prompt succeeded: {len(_simple_out.split())} words")
+                script = _simple_out
+
     if not script:
         print("[ScriptGen] Ollama produced nothing -- using extractive fallback.")
         script = _spacy_fallback_script(text, doc, context)
+
 
     if not script:
         print("[ScriptGen] Extractive fallback empty -- using cleaned source text.")
@@ -1005,10 +1208,10 @@ def summarise(text: str) -> str:
                 break
         script = _title_line or text.split(".")[0].strip() + "."
 
-    # PHASE 17: Minimum script length guard -- 19 words cannot produce 8 scenes
-    # If script is under 40 words, try to expand using all article sentences
+    # Minimum script length guard -- 19 words cannot produce 8 scenes
+    # If script is under 60 words, try to expand using all article sentences
     _script_words = len(script.split()) if script else 0
-    if _script_words < 40:
+    if _script_words < 60:
         print(f"[ScriptGen] WARNING: Script only {_script_words} words -- "
               f"attempting full-article sentence extraction.")
         # Try extracting all viable sentences from article directly
@@ -1031,7 +1234,6 @@ def summarise(text: str) -> str:
 
     # Cleaners
     script = clean_caption_text(script)
-    script = fix_streaming_duplicates(script)
     script = remove_exact_duplicates(script)
     script = enforce_context(script)
     script = clean_tts_text(script)
@@ -1044,6 +1246,13 @@ def summarise(text: str) -> str:
     _sentences = [s.strip() + "." if not s.strip().endswith((".", "!", "?")) else s.strip() for s in _sentences]
     script = " ".join(_sentences)
 
+    # Append the editorial opinion close
+    headline = text.split(".")[0].strip()
+    headline = re.sub(r"(?i)^(TITLE|SUMMARY)\s*:\s*", "", headline).strip()
+    editorial_close = generate_editorial_close(headline, context, script)
+    if editorial_close and editorial_close not in script:
+        script = script.rstrip(" .!?") + " — " + editorial_close.strip()
+
     return script
 
 
@@ -1052,7 +1261,7 @@ def _call_ollama_api(prompt: str) -> str:
     stdout, stderr, rc = _run_ollama_model(prompt, "llama3")
     return stdout
 
-def generate_dynamic_cta(headline: str, context: str) -> dict:
+def generate_dynamic_cta(headline: str, context: str, channel_name: str = "newscup") -> dict:
     """
     Ask Ollama to write a news-specific 3-line outro CTA.
 
@@ -1067,50 +1276,55 @@ def generate_dynamic_cta(headline: str, context: str) -> dict:
         "tense": {
             "main_line":   "Could this spark a global conflict?",
             "sub_line":    "Share your view in the comments.",
-            "engage_line": "Subscribe for daily breaking news.",
+            "engage_line": f"Subscribe to {channel_name} for breaking news.",
         },
         "war": {
             "main_line":   "Is the world on the edge of all-out war?",
             "sub_line":    "Tell us what you think below.",
-            "engage_line": "Follow for live conflict updates.",
+            "engage_line": f"Follow {channel_name} for live conflict updates.",
         },
         "politics": {
             "main_line":   "Will this decision change history?",
             "sub_line":    "Share your take in the comments.",
-            "engage_line": "Subscribe for daily political coverage.",
+            "engage_line": f"Subscribe to {channel_name} for political coverage.",
         },
         "serious": {
             "main_line":   "Who is responsible for this tragedy?",
             "sub_line":    "Share this to raise awareness.",
-            "engage_line": "Follow for the latest developments.",
+            "engage_line": f"Follow {channel_name} for the latest developments.",
         },
         "positive": {
             "main_line":   "Is this the breakthrough we have been waiting for?",
             "sub_line":    "Tell us your thoughts below.",
-            "engage_line": "Subscribe for more inspiring stories.",
+            "engage_line": f"Subscribe to {channel_name} for more inspiring stories.",
         },
         "informative": {
             "main_line":   "How will this change your daily life?",
             "sub_line":    "Share your point of view below.",
-            "engage_line": "Follow for daily science and tech news.",
+            "engage_line": f"Follow {channel_name} for daily science and tech news.",
         },
         "business": {
             "main_line":   "Could this crash the global economy?",
             "sub_line":    "Drop your analysis in the comments.",
-            "engage_line": "Subscribe for daily market updates.",
+            "engage_line": f"Subscribe to {channel_name} for market updates.",
         },
         "disaster": {
             "main_line":   "How prepared are we for the next disaster?",
             "sub_line":    "Share this with your community.",
-            "engage_line": "Follow for emergency updates.",
+            "engage_line": f"Follow {channel_name} for emergency updates.",
+        },
+        "sports": {
+            "main_line":   "Who is your pick to win the next match?",
+            "sub_line":    "Drop your predictions in the comments below.",
+            "engage_line": f"Subscribe to {channel_name} for daily sports updates.",
         },
     }
     default = dict(DEFAULTS.get(context, {
         "main_line":   "What do you think about this?",
         "sub_line":    "Share your thoughts below.",
-        "engage_line": "Follow for daily news updates.",
+        "engage_line": f"Follow {channel_name} for daily news updates.",
     }))
-    HARD_CLOSE = "Share your point of view or thoughts in the comments below, and subscribe for daily news videos."
+    HARD_CLOSE = f"Share your point of view or thoughts in the comments below, and subscribe to {channel_name} for daily news videos."
     default["hard_close"] = HARD_CLOSE
 
     if not headline:
@@ -1138,11 +1352,14 @@ def generate_dynamic_cta(headline: str, context: str) -> dict:
         f"THIS VIDEO IS SPECIFICALLY ABOUT: {headline}\n"
         f"KEY PEOPLE/PLACES IN THIS STORY: {_entity_anchor}\n"
         f"STORY EMOTIONAL TONE: {context}\n\n"
+        f"CHANNEL NAME: {channel_name}\n\n"
         "STRICT RULES:\n"
         "- Your question MUST reference the specific story above -- not a generic topic.\n"
         f"- BANNED TOPICS (do NOT mention): {ban_list}\n"
         "- Do NOT use the phrase 'Stay Updated', 'Stay Informed', or 'What do you think'.\n"
         "- The MAIN_LINE must name a specific element from THIS story.\n"
+        f"- The ENGAGE_LINE must invite the user to subscribe to {channel_name}.\n"
+        "- Never use pronouns like 'our team', 'we', 'us', or 'our channel'. Always use the channel name directly or say 'Subscribe'.\n"
         "- Keep every line under 12 words.\n\n"
         "Write exactly these three lines:\n"
         "MAIN_LINE: [punchy 6-10 word question or statement directly about THIS story]\n"
@@ -1302,7 +1519,6 @@ def _scrub_artifacts(script: str) -> str:
             continue
 
         # Rule 7 - Remove sentences that end on incomplete grammar
-        import re as _r7_re
         _sent_clean = sent.rstrip(".!?,;:")
         if _sent_clean:
             _last_word = _sent_clean.split()[-1].lower() if _sent_clean.split() else ""
@@ -1394,10 +1610,158 @@ def _scrub_artifacts(script: str) -> str:
                 sent = sent.replace(informal, formal)
                 sent = sent.replace(informal.strip().capitalize(), formal.strip().capitalize())
 
-        cleaned.append(sent)
+        # Rule 10 -- Remove RSS/channel boilerplate sentences
+        _BOILERPLATE_SENTENCES = {
+            # Sky News / BBC channel descriptions that appear in RSS fallback
+            "sky news delivers breaking news",
+            "politics, entertainment and more in the uk",
+            "headlines and top stories from business",
+            "subscribe to sky news",
+            "watch sky news live",
+            "follow sky news",
+            "download the sky news app",
+            "bbc news delivers breaking news",
+            "stay up to date with the latest",
+            "sign up for breaking news alerts",
+            "get the bbc news app",
+            "al jazeera english | live news",
+            "ndtv provides latest news",
+            "times of india brings the latest",
+            # Generic RSS boilerplate
+            "for more information visit",
+            "click here to read more",
+            "read the full story at",
+            "watch the latest video",
+        }
+        _sent_lower_bp = sent.lower().strip()
+        _is_boilerplate_sent = any(bp in _sent_lower_bp for bp in _BOILERPLATE_SENTENCES)
+        if _is_boilerplate_sent:
+            print(f"[SCRUB] RSS boilerplate removed: '{sent[:60]}'")
+            continue
 
-    result = " ".join(cleaned).strip()
+    # --- PHASE 26: Post-process: merge quote-split sentence pairs ---
+    # If sentence S ends with an odd number of " (unclosed quote) and sentence S+1
+    # starts with a closing-quote word (e.g. 'Justified"'), merge them.
+    _merged_cleaned = []
+    _skip_next = False
+    for _i, _sent in enumerate(cleaned):
+        if _skip_next:
+            _skip_next = False
+            continue
+        if _i + 1 < len(cleaned):
+            _next = cleaned[_i + 1]
+            # Count all double-quote characters (straight + curly open + curly close)
+            _quote_count = _sent.count('"') + _sent.count('\u201c') + _sent.count('\u201d')
+            _next_starts_quote = bool(_next) and _next[0] in ('"', '\u201d', '\u2019')
+            _next_has_closing = _next.split()[0].endswith('"') if _next.split() else False
+            if (_quote_count % 2 == 1) and (_next_has_closing or _next_starts_quote):
+                _combined = _sent.rstrip(".!?") + " " + _next.lstrip()
+                if not _combined.rstrip().endswith((".", "!", "?")):
+                    _combined += "."
+                print(f"[SCRUB] Quote-split merged: '{_combined[:80]}'")
+                _merged_cleaned.append(_combined)
+                _skip_next = True
+                continue
+        _merged_cleaned.append(_sent)
+
+    result = " ".join(_merged_cleaned).strip()
     return result if result else script   # never return empty
+
+
+def generate_compilation_script(articles: list[dict], channel_profile=None) -> str:
+    """
+    Generate a compiled multi-story script for compilation mode.
+    Fetches up to 3 articles, generates a short 3-sentence script for each,
+    and returns them combined with [STORY X: TITLE] transition markers.
+    """
+    from channel_profiles import get_channel_profile
+    profile = channel_profile or get_channel_profile(None)
+    lang = getattr(profile, "language", "en")
+    
+    script_segments = []
+    
+    for idx, article in enumerate(articles[:3], 1):
+        headline = article.get("title", f"Story {idx}")
+        full_text = article.get("full_article_text") or article.get("summary") or headline
+        
+        # Clean title for transition label
+        clean_title = re.sub(r'[^\w\s\-\!\?]', '', headline).strip().upper()
+        # Truncate clean title if too long
+        if len(clean_title) > 35:
+            clean_title = clean_title[:32] + "..."
+            
+        segment_script = ""
+        
+        # Determine story context for tone
+        story_doc = nlp(full_text)
+        story_context = detect_context(story_doc)
+        
+        # Prompt for English vs Hindi
+        if lang == "hi":
+            prompt = (
+                "You are writing a short Hindi compilation news segment.\n"
+                "Write EXACTLY 3 complete sentences in Devanagari Hindi using facts ONLY from the article below.\n"
+                "Do not invent names, numbers, locations, quotes, or claims.\n"
+                "Structure:\n"
+                "Sentence 1: Headline hook detailing the event (must contain location, name, or number).\n"
+                "Sentence 2: Essential details or background context.\n"
+                "Sentence 3: Immediate outcome, reaction, or what comes next.\n"
+                "Rules:\n"
+                "- Write only in Devanagari Hindi.\n"
+                "- Exactly 3 complete sentences.\n"
+                "- No headers, bullets, or labels. Start writing immediately.\n\n"
+                f"ARTICLE:\n{full_text[:3000]}\n\n"
+                "Hindi segment script:"
+            )
+            # Run Ollama
+            for attempt in range(3):
+                stdout, _, _ = _run_ollama_model(prompt, "llama3")
+                if stdout:
+                    segment_script = _normalize_ollama_output(stdout)
+                    segment_script = re.sub(r"(?i)^(hindi segment script|script|output)\s*:\s*", "", segment_script).strip()
+                    sentence_count = len([s for s in re.split(r"(?<=[.!?।])\s+", segment_script) if s.strip()])
+                    if segment_script and sentence_count >= 2:
+                        break
+            if not segment_script:
+                print(f"[ScriptGen][Hindi] Segment {idx} fallback.")
+                segment_script = _generate_hindi_script_with_ollama(full_text, target_sentences=3)
+        else:
+            prompt = (
+                "You are writing a short compilation news segment for a broadcast news channel.\n"
+                "Write EXACTLY 3 complete sentences based ONLY on the ARTICLE below. Do not invent any new details.\n"
+                "Structure:\n"
+                "Sentence 1: Headline hook detailing the event (must contain location, name, or number).\n"
+                "Sentence 2: Essential details or background context.\n"
+                "Sentence 3: Immediate outcome, reaction, or what comes next.\n"
+                "Rules:\n"
+                "- Exactly 3 complete sentences.\n"
+                "- Every sentence must be grammatically complete (subject + verb + object).\n"
+                "- Write in active voice. Present or past tense only.\n"
+                "- No section labels, numbers, bullet points, or introductory/concluding chat.\n\n"
+                f"ARTICLE:\n{full_text[:3000]}\n\n"
+                "Segment script:"
+            )
+            # Run Ollama
+            for attempt in range(3):
+                stdout, _, _ = _run_ollama_model(prompt, "llama3")
+                if stdout:
+                    segment_script = _normalize_ollama_output(stdout)
+                    segment_script = re.sub(r"(?i)^(segment script|script|output)\s*:\s*", "", segment_script).strip()
+                    sentence_count = len([s for s in re.split(r"(?<=[.!?])\s+", segment_script) if s.strip()])
+                    if segment_script and sentence_count >= 2:
+                        break
+            if not segment_script:
+                print(f"[ScriptGen] Segment {idx} fallback.")
+                segment_script = _spacy_fallback_script(full_text, story_doc, story_context)
+                sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", segment_script) if s.strip()]
+                segment_script = " ".join(sents[:3])
+                
+        segment_script = clean_caption_text(segment_script)
+        script_segments.append(f"[STORY {idx}: {clean_title}]\n{segment_script}")
+        
+    return "\n\n".join(script_segments)
+
+
 
 
 if __name__ == "__main__":

@@ -3,26 +3,21 @@
 import sys
 import re
 import spacy  # type: ignore
+from utils import clean_caption_text
 
-# PHASE 4: Environment lock
+# Environment lock
 import os as _os_env_check
 if "VIRTUAL_ENV" not in _os_env_check.environ and ".venv" not in sys.executable and "venv" not in sys.executable:
     print(f"[WARN] Running outside a virtual environment: {sys.executable}")
 
-def clean_caption_text(text):
-    text = re.sub(r'\x1B\[[0-?]*[ -/]*[@-~]', '', text)
-    text = re.sub(r'\b\d+[A-Z]\b', '', text)
-    text = re.sub(r'[^\x00-\x7F]+', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
 
 MIN_WORDS = 8
-MAX_WORDS = 18
-IDEAL_WORDS = 12
+MAX_WORDS = 28    # Increased from 18 to allow full sentences to survive
+IDEAL_WORDS = 18  # Increased from 12 to stop aggressive chopping
 
 # Scene duration bounds
 MIN_SCENE_DURATION = 4
-MAX_SCENE_DURATION = 6
+MAX_SCENE_DURATION = 8  # Increased slightly to accommodate longer text chunks
 
 BAD_ENDINGS = {"the", "a", "an", "of", "to", "in", "on", "at", "for", "with", "from", "by", "and", "but", "or", "so", "yet", "nor", "as", "is", "are", "was", "were", "has", "have", "had", "will", "would", "should", "could"}
 
@@ -96,6 +91,39 @@ _TIME_TRUNCATIONS = {
 }
 SCENE_BAD_FINALS.update(_TIME_TRUNCATIONS)
 
+_NEW_BAD_FINALS = {
+    # Adjectives that cannot end a sentence (require a following noun)
+    "thick", "thin", "dense", "dark", "black", "white", "bright", "deep",
+    "heavy", "light", "large", "small", "vast", "huge", "massive", "tiny",
+    "long", "short", "high", "low", "wide", "narrow", "sharp", "blunt",
+    "quick", "slow", "cold", "warm", "hot", "fresh", "raw", "full", "empty",
+    "open", "clear", "dark", "loud", "quiet", "hard", "soft", # "closed" is excluded since it can end a sentence
+    "strong", "weak", "rich", "poor", "safe", "dangerous", "severe",
+    "critical", "urgent", "significant", "major", "minor", "primary",
+    "secondary", "direct", "indirect", "initial", "final", "total",
+    "partial", "potential", "possible", "likely", "unlikely",
+
+    # Transitive verbs requiring an object (cannot end a scene)
+    "proposing", "suggesting", "recommending", "requesting", "demanding",
+    "claiming", "stating", "arguing", "alleging", "asserting", "declaring",
+    "announcing", "confirming", "denying", "rejecting", "accepting",
+    "approving", "opposing", "supporting", "targeting", "attacking",
+    "defending", "protecting", "threatening", "warning", "urging",
+    "calling", "asking", "telling", "showing", "describing", "explaining",
+    "discussing", "addressing", "raising", "highlighting", "emphasizing",
+    "noting", "citing", "referencing", "mentioning", "including",
+    "excluding", "representing", "indicating", "suggesting", "implying",
+
+    # Preposition-like phrase starters that need completion
+    "amid", "despite", "following", "regarding", "concerning", "including",
+    "excluding", "involving", "affecting", "covering", "spanning",
+
+    # Additional verb fragments and gerunds to prevent bad ends
+    "ending", "making", "having", "aimed", "trying", "attempting",
+}
+SCENE_BAD_FINALS.update(_NEW_BAD_FINALS)
+
+
 def extract_context_entities(script: str) -> dict:
     """
     Use spaCy NER to extract named entities from the full script.
@@ -140,7 +168,7 @@ def extract_context_entities(script: str) -> dict:
         elif ent.label_ == "EVENT" and ent.text not in events:
             events.append(ent.text)
 
-    # PHASE 12: Disambiguate "Tripoli" — use Lebanese context if story mentions Lebanon/Lebanese
+    # Disambiguate "Tripoli" — use Lebanese context if story mentions Lebanon/Lebanese
     _script_text_lower = script.lower() if isinstance(script, str) else ""
     _locations_lower = [l.lower() for l in locations]
     if "tripoli" in _locations_lower and not country_context:
@@ -259,7 +287,7 @@ def extract_context_entities(script: str) -> dict:
             "supreme court of india": "India",
         }
         all_org_text = " ".join(orgs).lower()
-        # PHASE 10: India Priority - if any Indian GPE was found, lock it in before ORG logic
+        # India Priority - if any Indian GPE was found, lock it in before ORG logic
         _indian_gpes = ["india", "delhi", "mumbai", "bangalore", "chennai", "kolkata"]
         if any(g.lower() in _indian_gpes for g in locations):
             country_context = "India"
@@ -340,6 +368,8 @@ def _detect_scene_type(sentence: str) -> str:
         return "business"
     if _match(["flood", "earthquake", "climate", "disaster", "storm", "hurricane", "tsunami", "wildfire", "drought", "emergency", "tornado", "avalanche", "landslide", "famine", "evacuation"], s):
         return "disaster"
+    if _match(["football", "soccer", "cricket", "basketball", "olympics", "championship", "tournament", "match", "game", "league", "cup", "player", "coach", "transfer"], s):
+        return "sports"
     return "general"
 
 def detect_visual_context(text: str) -> str:
@@ -359,6 +389,8 @@ def detect_visual_context(text: str) -> str:
         return "technology"
     if _match(["people", "family", "community", "victim", "witness", "survivor", "crowd", "civilians"], t):
         return "people"
+    if _match(["football", "soccer", "cricket", "basketball", "olympics", "championship", "tournament", "match", "game", "league", "cup", "player", "coach", "transfer", "stadium"], t):
+        return "sports"
     return "general"
 
 def extract_keywords(text: str) -> str:
@@ -368,26 +400,96 @@ def extract_keywords(text: str) -> str:
     words = [w for w in words if w not in STOPWORDS]
     return " ".join(words[:4])
 
+def ends_with_terminal_punctuation(text: str) -> bool:
+    return text.rstrip().endswith((".", "!", "?"))
+
 def _strict_chunk_sentence(sentence: str) -> list[str]:
     words = sentence.split()
     if len(words) <= MAX_WORDS:
         return [sentence]
-    mid = len(words) // 2
-    for offset in range(0, min(5, len(words) - mid)):
-        for candidate in [mid + offset, mid - offset]:
-            if candidate <= 0 or candidate >= len(words): continue
-            left_last = words[candidate - 1].lower().rstrip(",.;:")
-            right_first = words[candidate].lower().rstrip(",.;:")
-            if right_first in ORPHAN_STARTERS: continue
-            if left_last in BAD_ENDINGS: continue
-            if right_first in CONTINUATION_WORDS: continue
-            if (words[candidate][0].isupper() and not words[candidate - 1].rstrip().endswith((",", ".", ";", ":")) and right_first not in ("the", "a", "an", "he", "she", "they", "it", "his", "her", "their", "its", "this", "that", "these", "those")):
+    
+    # Generate all candidate split points
+    # We need both left and right chunks to have at least MIN_WORDS
+    min_split = MIN_WORDS
+    max_split = len(words) - MIN_WORDS
+    
+    if min_split <= max_split:
+        candidates = list(range(min_split, max_split + 1))
+        # Sort candidates by distance from IDEAL_WORDS
+        candidates.sort(key=lambda x: abs(x - IDEAL_WORDS))
+        
+        for c in candidates:
+            left_last = words[c - 1].lower().rstrip(".,;:!?\"'")
+            right_first = words[c].lower().rstrip(".,;:!?\"'")
+            
+            # 1. Skip if right starts with orphan/continuation
+            if right_first in ORPHAN_STARTERS or right_first in CONTINUATION_WORDS:
                 continue
-            if (len(words[:candidate]) >= MIN_WORDS and len(words[candidate:]) >= MIN_WORDS):
-                left_text, right_text = " ".join(words[:candidate]), " ".join(words[candidate:])
-                if not left_text.endswith((".", "!", "?")): left_text += "."
-                return [left_text, right_text]
-    return [sentence]
+            # 2. Skip if left ends with bad endings/finals
+            if left_last in BAD_ENDINGS or left_last in SCENE_BAD_FINALS:
+                continue
+            # 3. Skip if right starts with an uppercase letter but left doesn't end with punctuation
+            if (words[c][0].isupper() and 
+                not words[c - 1].rstrip().endswith((",", ".", ";", ":")) and 
+                right_first not in ("the", "a", "an", "he", "she", "they", "it", "his", "her", "their", "its", "this", "that", "these", "those")):
+                continue
+            # 4. Skip adjective endings
+            _ADJ_SUFFIXES = ("ful", "less", "ous", "ive", "ble", "al", "ary", "ory", "ic")
+            _SAFE_ADJ_ENDINGS = {
+                "special", "general", "central", "federal", "natural",
+                "national", "international", "local", "global", "original",
+                "critical", "medical", "political", "historical"
+            }
+            if (left_last.endswith(_ADJ_SUFFIXES)
+                    and left_last not in _SAFE_ADJ_ENDINGS
+                    and len(left_last) > 5):
+                continue
+            # 5. Skip open quotes
+            left_text = " ".join(words[:c])
+            open_quotes = (left_text.count('"') +
+                           left_text.count('\u201c') -
+                           left_text.count('\u201d'))
+            if open_quotes > 0:
+                continue
+            
+            # 6. Skip open brackets/square brackets (to preserve quote/tweet/document tags)
+            open_brackets = left_text.count('[') - left_text.count(']')
+            if open_brackets > 0:
+                continue
+                
+            # If we pass all checks, we split here
+            left_text = left_text.rstrip(" ,;:")
+            right_text = " ".join(words[c:])
+            if not ends_with_terminal_punctuation(left_text):
+                left_text += "."
+            
+            print(f"[CHUNK] Clean split at word {c}: "
+                  f"'{left_text[:40]}' | '{right_text[:30]}'")
+            
+            right_chunks = _strict_chunk_sentence(right_text) if len(right_text.split()) > MAX_WORDS else [right_text]
+            return [left_text] + right_chunks
+
+    # If no clean split was found
+    if len(words) <= 20:
+        _whole = " ".join(words).rstrip(" ,;:")
+        if not ends_with_terminal_punctuation(_whole):
+            _whole += "."
+        print(f"[CHUNK] Keeping {len(words)}-word sentence whole (no clean split found): '{_whole[:40]}...'")
+        return [_whole]
+        
+    # Hard fallback: split at IDEAL_WORDS
+    split_at = min(max(IDEAL_WORDS, MIN_WORDS), len(words) - 1)
+    left_text = " ".join(words[:split_at]).rstrip(" ,;:")
+    right_text = " ".join(words[split_at:])
+    if not ends_with_terminal_punctuation(left_text):
+        left_text += "."
+    if right_text and right_text[0].islower():
+        right_text = right_text[0].upper() + right_text[1:]
+        
+    print(f"[CHUNK] Hard-split fallback at word {split_at}: '{left_text[:40]}' | '{right_text[:30]}'")
+    right_chunks = _strict_chunk_sentence(right_text) if len(right_text.split()) > MAX_WORDS else [right_text]
+    return [left_text] + right_chunks
+
 
 def calculate_scene_count(script: str) -> int:
     words = len(script.split())
@@ -437,6 +539,9 @@ def safe_split(words):
 
 def _clean_scene_text(text: str) -> str:
     text = text.strip()
+    starts_lowercase = bool(text and text[0].islower())
+    if starts_lowercase and len(text.split()) < 8:
+        return ""
     text = re.sub(r'^[A-Z]{1,5}\s*,\s*', '', text)
     text = re.sub(r'^[,.\s;:]+', '', text)
     COORD_CONJUNCTIONS = r'^(and|or|but|so|yet|nor|both|either)\s+'
@@ -457,8 +562,8 @@ def _clean_scene_text(text: str) -> str:
     text = _paren_re.sub(r'\s{2,}', ' ', text).strip()
     if text and text[-1] not in ".!?,;:": text += "."
     if text and text[0].islower(): text = text[0].upper() + text[1:]
-    FRAGMENT_STARTERS = {"who", "which", "that", "whose", "whom", "where", "whereby", "while", "although", "though", "whereas", "whenever", "wherever", "and", "but", "or", "nor", "yet", "so", "also", "additionally", "furthermore", "moreover", "however", "therefore", "consequently", "subsequently", "meanwhile", "nevertheless", "limit", "reduce", "minimize", "maximize", "ensure", "provide", "implement", "establish", "maintain", "increase", "decrease", "allow", "prevent", "avoid", "consider", "note", "follow", "aimed", "designed", "intended", "expected", "planned", "called", "built", "made", "taken", "said", "told", "given", "seen", "reported", "confirmed", "stated", "announced", "described", "was", "were", "is", "are", "has", "have", "had", "will", "would", "could", "should", "shall", "must", "can", "may", "might", "does", "did", "do", "results", "action", "note", "warning", "update", "breaking", "summary", "context", "background", "timeline", "analysis", "about", "nearly", "almost", "roughly", "approximately", "over", "under", "more", "less", "fewer", "greater", "noted", "added", "continued", "explained", "warned", "urged", "ordered", "issued", "working", "calling", "building", "having", "being", "going", "coming", "taking", "making", "putting", "setting", "getting", "running", "moving", "pushing", "leading", "trying", "using", "buildup", "buildup of", "outbreak", "reports", "consumption", "production", "distribution", "implementation", "development", "deployment", "establishment", "reduction", "increase", "decrease", "expansion", "contraction", "instance,", "for instance,", "however,", "white", "black", "red", "blue", "green", "yellow", "orange", "purple", "pink", "grey", "gray", "brown", "dark", "light", "new", "old", "large", "small", "major", "minor", "main", "key", "core", "top", "high", "low", "full", "half", "both", "the", "their", "this", "its", "release", "demanding", "whose",
-        # PHASE 13: Expanded fragment starters from logs
+    FRAGMENT_STARTERS = {"who", "which", "that", "whose", "whom", "where", "whereby", "while", "although", "though", "whereas", "whenever", "wherever", "and", "but", "or", "nor", "yet", "so", "also", "additionally", "furthermore", "moreover", "however", "therefore", "consequently", "subsequently", "meanwhile", "nevertheless", "limit", "reduce", "minimize", "maximize", "ensure", "provide", "implement", "establish", "maintain", "increase", "decrease", "allow", "prevent", "avoid", "consider", "note", "follow", "aimed", "designed", "intended", "expected", "planned", "called", "built", "made", "taken", "said", "told", "given", "seen", "reported", "confirmed", "stated", "announced", "described", "was", "were", "is", "are", "has", "have", "had", "will", "would", "could", "should", "shall", "must", "can", "may", "might", "does", "did", "do", "results", "action", "note", "warning", "update", "breaking", "summary", "context", "background", "timeline", "analysis", "about", "nearly", "almost", "roughly", "approximately", "over", "under", "more", "less", "fewer", "greater", "noted", "added", "continued", "explained", "warned", "urged", "ordered", "issued", "working", "calling", "building", "having", "being", "going", "coming", "taking", "making", "putting", "setting", "getting", "running", "moving", "pushing", "leading", "trying", "using", "buildup", "buildup of", "outbreak", "reports", "consumption", "production", "distribution", "implementation", "development", "deployment", "establishment", "reduction", "increase", "decrease", "expansion", "contraction", "instance,", "for instance,", "however,", "white", "black", "red", "blue", "green", "yellow", "orange", "purple", "pink", "grey", "gray", "brown", "dark", "light", "new", "old", "large", "small", "major", "minor", "main", "key", "core", "top", "high", "low", "full", "half", "both", "the", "their", "this", "its", "release", "demanding", "whose", "due", "due to", "owing", "owing to",
+        # Expanded fragment starters from logs
         "hearing", "sparking", "fueling", "causing", "hitting", "striking",
         "targeting", "killing", "wounding", "injuring", "destroying", "damaging",
         "burning", "collapsing", "erupting", "threatening", "warning", "urging",
@@ -484,7 +589,7 @@ def _clean_scene_text(text: str) -> str:
     if first_word in FRAGMENT_STARTERS: return ""
     return text
 
-def plan_scenes(script: str) -> list[dict]:
+def _plan_scenes_core(script: str) -> list[dict]:
     script = clean_caption_text(script)
     context = extract_context_entities(script)
     protected = re.sub(r'\b([A-Z])\.\s([A-Z])\.', r'\1\2', script)
@@ -501,9 +606,30 @@ def plan_scenes(script: str) -> list[dict]:
             scene_type = _detect_scene_type(fragment)
             scene_context = detect_visual_context(fragment)
             scene_keyword = extract_keywords(fragment) or "breaking news event"
-            if context["location"] or context["person"]: scene_keyword = f"{context['location']} {context['person']} {scene_keyword} news event realistic"
-            else: scene_keyword = f"{scene_keyword} breaking news event realistic photo"
-            if i == 0 and j == 0: scene_keyword = f"{scene_keyword} breaking news dramatic real photo"
+
+            # Check for primary source markers
+            is_evidence = False
+            if "[QUOTE:" in fragment:
+                scene_type = "quote_card"
+                scene_context = "quote"
+                scene_keyword = "editorial direct quote card overlay design"
+                is_evidence = True
+            elif "[TWEET:" in fragment:
+                scene_type = "tweet_overlay"
+                scene_context = "social"
+                scene_keyword = "official social media tweet post card graphic"
+                is_evidence = True
+            elif "[DOCUMENT:" in fragment:
+                scene_type = "evidence_graphic"
+                scene_context = "document"
+                scene_keyword = "geopolitical document report evidence graphic chart"
+                is_evidence = True
+
+            if not is_evidence:
+                if context["location"] or context["person"]: scene_keyword = f"{context['location']} {context['person']} {scene_keyword} news event realistic"
+                else: scene_keyword = f"{scene_keyword} breaking news event realistic photo"
+                if i == 0 and j == 0: scene_keyword = f"{scene_keyword} breaking news dramatic real photo"
+
             cleaned_fragment = _clean_scene_text(fragment)
             if not cleaned_fragment:
                 if scenes and fragment.strip():
@@ -537,12 +663,54 @@ def plan_scenes(script: str) -> list[dict]:
     def _scene_ends_incomplete(text: str) -> bool:
         clean = text.rstrip(".!?,;: ")
         if not clean: return False
-        last_word = clean.split()[-1].lower()
+        words_list = clean.split()
+        last_word = words_list[-1].lower()
 
-        # PHASE 20: Bare numbers as last word = truncated date/reference
+        # Bare numbers as last word = truncated date/reference
         import re as _ni_re
         if _ni_re.match(r'^\d+$', last_word) and int(last_word) < 200:
             return True
+
+        # ALWAYS_INCOMPLETE set of phrase-initiating/connecting words that cannot end a scene.
+        # "closed" is explicitly excluded from here because "The border was closed." is a valid ending.
+        # Downstream checks will merge "closed due to damage" correctly because the sentence will continue.
+        _ALWAYS_INCOMPLETE = {
+            "at", "in", "on", "of", "for", "to", "by", "with", "from", "into", "onto", 
+            "over", "under", "than", "about", "through", "between", "among", "against", 
+            "during", "before", "after", "within", "without", "along", "across", 
+            "behind", "toward", "a", "an", "the", "and", "or", "but", "so", "yet", 
+            "nor", "as", "that", "which", "when", "while", "where", "whether", "what", 
+            "who", "if", "be", "been", "being", "have", "has", "had", "will", "would", 
+            "should", "could", "may", "might", "shall", "must", "can", "do", "did", 
+            "does", "its", "their", "his", "her", "our", "your", "this", "these", 
+            "those", "such", "any", "some", "not", "high-profile", "well-known", 
+            "long-term", "short-term", "large-scale", "small-scale", "full-scale", 
+            "ever-present", "high-level", "top-level", "low-level", "amid", "despite", 
+            "following", "regarding", "concerning", "including", "excluding", 
+            "involving", "affecting", "covering", "spanning", "due", "owing",
+            "facing", "posing", "challenging", "directing", "leaving", "claiming",
+            "taking", "causing", "bringing", "killing", "injuring", "wounding",
+            "destroying", "highlighting", "threatening"
+        }
+
+        if last_word in _ALWAYS_INCOMPLETE:
+            return True
+
+        # Check for dangling noun phrase starters
+        # e.g., sentences starting with "Direct talks...", "Efforts to..." but lacking a verb
+        _SUBJECT_MISSING_STARTERS = {
+            "direct", "efforts", "talks", "negotiations", "discussions", "plans", "proposals", "steps", 
+            "measures", "attempts", "actions", "investigations", "operations", "attacks", "strikes", "clashes"
+        }
+        first_word = words_list[0].lower() if words_list else ""
+        if first_word in _SUBJECT_MISSING_STARTERS:
+            try:
+                doc = nlp(clean)
+                has_verb = any(t.pos_ in ("VERB", "AUX") for t in doc)
+                if not has_verb:
+                    return True
+            except Exception:
+                pass
 
         if not text.rstrip().endswith((".", "!", "?")):
             if last_word in SCENE_BAD_FINALS: return True
@@ -591,7 +759,7 @@ def plan_scenes(script: str) -> list[dict]:
                 fixed_scenes.append(scene)
             i += 1
 
-    # PHASE 18: Final word count enforcement -- split any scene > MAX_WORDS
+    # Final word count enforcement -- split any scene > MAX_WORDS
     # This prevents 10.80s audio scenes that cause overlap in build_video()
     _enforced = []
     for _s in fixed_scenes:
@@ -657,6 +825,116 @@ def plan_scenes(script: str) -> list[dict]:
             else: shrunk.append(s); i += 1
         scenes = shrunk
     return scenes
+
+
+def plan_scenes(script: str, pacing_style: dict | None = None) -> list[dict]:
+    global MAX_WORDS, IDEAL_WORDS
+    if pacing_style and "visual_cut_threshold" in pacing_style:
+        t = pacing_style["visual_cut_threshold"]
+        MAX_WORDS = max(14, min(int(t * 10), 32))
+        IDEAL_WORDS = max(10, min(int(t * 6.5), 22))
+        print(f"[ScenePlanner] Dynamic pacing adaptation: visual_cut_threshold={t}s -> MAX_WORDS={MAX_WORDS}, IDEAL_WORDS={IDEAL_WORDS}")
+
+    script = clean_caption_text(script)
+    
+    # Check if this is a compilation script
+    if "[STORY " in script:
+        # Split by story markers: [STORY X: TITLE]
+        story_blocks = re.split(r'\[STORY\s+\d+:\s*(.*?)\]', script)
+        # Re.split with group returns: [prefix, title1, text1, title2, text2, ...]
+        scenes = []
+        i = 1
+        story_idx = 1
+        while i < len(story_blocks):
+            title = story_blocks[i].strip()
+            text = story_blocks[i + 1].strip() if i + 1 < len(story_blocks) else ""
+            
+            # Transition scene for story segment
+            scenes.append({
+                "text": f"STORY {story_idx}: {title}",
+                "keyword": "transition title card",
+                "type": "transition",
+                "context": "transition",
+                "entities": {
+                    "location": "", "person": "", "org": "",
+                    "all_persons": [], "all_locations": [], "all_orgs": [], "all_events": [],
+                    "country_context": "",
+                },
+                "headline": title,
+                "news_source": "Breaking News",
+                "article_url": "",
+                "og_image_url": "",
+                "is_transition": True,
+                "story_title": title,
+                "story_index": story_idx,
+            })
+            
+            # Plan scenes for this story segment
+            story_scenes = _plan_scenes_core(text)
+            for s in story_scenes:
+                s["story_index"] = story_idx
+                s["story_title"] = title
+                
+            scenes.extend(story_scenes)
+            
+            i += 2
+            story_idx += 1
+            
+        # Tag special scenes (split-screen, social mockups)
+        tag_special_scenes(scenes)
+        return scenes
+        
+    else:
+        scenes = _plan_scenes_core(script)
+        tag_special_scenes(scenes)
+        return scenes
+
+
+def tag_special_scenes(scenes: list[dict]):
+    for scene in scenes:
+        if scene.get("type") == "transition":
+            continue
+            
+        text = scene["text"]
+        doc = nlp(text)
+        words = {w.lower().rstrip(".,;:!?") for w in text.split()}
+        
+        # 1. Social Mockups (visual artifacts)
+        social_triggers = {
+            "tweet", "tweeted", "unfollowed", "instagram", "post", "whatsapp",
+            "chat", "quote", "statement", "reported", "posted", "shared",
+            "unfollow", "lafdas", "lafda"
+        }
+        if words & social_triggers:
+            ents = [e.text for e in doc.ents if e.label_ in ("PERSON", "ORG")][:2]
+            if ents:
+                scene["is_social_mockup"] = True
+                scene["social_entity"] = ents[0]
+                scene["social_text"] = clean_caption_text(text)
+                print(f"[Planner] Tagged social mockup: '{ents[0]}' -> '{text[:40]}'")
+                
+        # 2. Split Screens (visual collages)
+        distinct_ents = []
+        for ent in doc.ents:
+            if ent.label_ in ("PERSON", "ORG", "GPE"):
+                e_text = ent.text.strip()
+                if len(e_text) > 2 and e_text.lower() not in ["bbc", "news", "reuters"]:
+                    if e_text not in distinct_ents:
+                        distinct_ents.append(e_text)
+                        
+        split_indicators = {"vs", "versus", "against", "clashed", "row", "dispute", "spat", "lafda", "compare"}
+        if len(distinct_ents) >= 2 or (len(distinct_ents) == 1 and (words & split_indicators)):
+            if scene.get("type") != "sports":
+                scene["is_split_screen"] = True
+                if len(distinct_ents) < 2:
+                    ctx_country = scene.get("entities", {}).get("country_context", "")
+                    if ctx_country and ctx_country != distinct_ents[0]:
+                        distinct_ents.append(ctx_country)
+                    else:
+                        distinct_ents.append(scene.get("type", "news"))
+                scene["split_entities"] = distinct_ents[:2]
+                print(f"[Planner] Tagged split screen: {distinct_ents[:2]} -> '{text[:40]}'")
+
 
 if __name__ == "__main__":
     sample_script = "The United Nations warned about rising sea levels in coastal cities. Scientists published new research on renewable energy storage. NASA announced a new mission to explore the surface of Mars."

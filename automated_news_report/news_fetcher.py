@@ -588,7 +588,7 @@ def _cross_verify_article(article: dict, max_sources: int = 3) -> dict:
     return article
 
 
-def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general") -> dict:
+def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general", channel: str = None) -> dict:
     """
     Scrape all feeds in the selected category pool simultaneously, score every
     headline using _score_headline(), and return the single highest-scoring article.
@@ -597,6 +597,7 @@ def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general"
     Args:
         feed_url: primary RSS URL (used as first candidate in every category)
         category: one of "general", "sports", "entertainment", "business", "technology"
+        channel: optional channel key to fetch feeds dynamically from the database
     """
     import concurrent.futures
 
@@ -617,9 +618,30 @@ def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general"
         return results
 
     all_articles = []
-    # Select category-specific feed pool
-    _cat_feeds = _CATEGORY_FEEDS.get(category, _ALL_FEEDS)
-    feeds = list(dict.fromkeys([feed_url] + _cat_feeds))
+    
+    # Query channel-specific feeds from the database if channel is provided
+    feeds = []
+    if channel:
+        try:
+            from db_manager import get_db_connection
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT url FROM feeds WHERE channel_key=? AND category=? AND health='healthy' ORDER BY priority_rank ASC",
+                (channel, category)
+            )
+            rows = cursor.fetchall()
+            feeds = [row["url"] for row in rows]
+            conn.close()
+            if feeds:
+                print(f"[NewsFetcher] Loaded {len(feeds)} feeds from DB for channel '{channel}' and category '{category}'")
+        except Exception as e:
+            print(f"[NewsFetcher] Error fetching feeds from DB: {e}")
+
+    if not feeds:
+        _cat_feeds = _CATEGORY_FEEDS.get(category, _ALL_FEEDS)
+        feeds = list(dict.fromkeys([feed_url] + _cat_feeds))
+
     print(f"[NewsFetcher] Category: '{category}' -- scoring from {len(feeds)} feeds...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
         futures = {ex.submit(_fetch_single, url): url for url in feeds}
