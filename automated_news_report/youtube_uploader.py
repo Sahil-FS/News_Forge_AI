@@ -74,12 +74,28 @@ def _get_credentials(channel_key: str):
     # 2. Refresh if expired
     if creds and not creds.valid:
         if creds.expired and creds.refresh_token:
-            try:
-                print(f"[Upload] Refreshing expired token for {channel_key}...")
-                creds.refresh(Request())
-            except Exception as e:
-                print(f"[Upload] Token refresh failed ({e}) — will re-authenticate.")
-                creds = None
+            import time
+            for attempt in range(3):
+                try:
+                    print(f"[Upload] Refreshing expired token for {channel_key} (attempt {attempt + 1}/3)...")
+                    creds.refresh(Request())
+                    with open(str(token_path), "w", encoding="utf-8") as f:
+                        f.write(creds.to_json())
+                    print(f"[Upload] Token refreshed and saved -> {token_path.name}")
+                    break
+                except Exception as e:
+                    err_str = str(e).lower()
+                    if "invalid_grant" in err_str:
+                        print(f"[Upload] Token permanently revoked ({e}) — will re-authenticate.")
+                        creds = None
+                        break
+                    print(f"[Upload] Token refresh temporary network error: {e}")
+                    if attempt < 2:
+                        print(f"[Upload] Waiting 5 seconds before retrying...")
+                        time.sleep(5)
+                    else:
+                        print(f"[Upload] All token refresh attempts failed — will re-authenticate.")
+                        creds = None
 
     # 3. Full OAuth flow (only when no valid token exists)
     if not creds or not creds.valid:
@@ -407,122 +423,217 @@ def get_safe_upload_time(channel_key: str) -> str:
     return scheduled_time.isoformat().replace("+00:00", "Z")
 
 
-def get_geo_scheduled_upload_time(channel_key: str, country: str | None = None) -> str:
+# ── Geo-Timeline Matrix Configuration ──────────────────────────────────────────
+# 4:30 PM IST to 5:00 AM IST publishing window broken down into 6 strategic slots
+GEO_TIMELINE_SLOTS = [
+    {
+        "slot": 1,
+        "name": "India / Asian Geopolitics / Middle East",
+        "start_hour": 16, "start_min": 30,
+        "end_hour": 17, "end_min": 30,
+        "regions": ["india", "asia", "middle east", "israel", "gaza", "iran", "china", "pakistan"],
+        "categories": ["general", "politics", "war"]
+    },
+    {
+        "slot": 2,
+        "name": "UK / Europe / Transatlantic / Ukraine-Russia",
+        "start_hour": 18, "start_min": 30,
+        "end_hour": 19, "end_min": 30,
+        "regions": ["uk", "europe", "ukraine", "russia", "germany", "france", "britain"],
+        "categories": ["war", "politics", "general"]
+    },
+    {
+        "slot": 3,
+        "name": "Transatlantic & Global Business",
+        "start_hour": 20, "start_min": 30,
+        "end_hour": 21, "end_min": 30,
+        "regions": ["global", "uk", "us", "transatlantic", "europe"],
+        "categories": ["business", "markets", "economy", "general"]
+    },
+    {
+        "slot": 4,
+        "name": "US Politics, Supreme Court, Major US Policy",
+        "start_hour": 22, "start_min": 30,
+        "end_hour": 23, "end_min": 30,
+        "regions": ["united states", "us", "usa", "washington", "america"],
+        "categories": ["politics", "policy", "general"]
+    },
+    {
+        "slot": 5,
+        "name": "US Tech, Economy, AI Giants",
+        "start_hour": 1, "start_min": 0, "next_day": True,
+        "end_hour": 2, "end_min": 0,
+        "regions": ["us", "silicon valley", "california", "global"],
+        "categories": ["technology", "business", "ai", "general"]
+    },
+    {
+        "slot": 6,
+        "name": "US Prime Evening / Global Breaking Summary",
+        "start_hour": 3, "start_min": 30, "next_day": True,
+        "end_hour": 4, "end_min": 45,
+        "regions": ["us", "global"],
+        "categories": ["general", "breaking", "world"]
+    },
+]
+
+
+def get_geo_scheduled_upload_time(channel_key: str, country: str | None = None, category: str | None = None) -> str:
     """
-    Calculate the next optimized publish time in UTC based on the target country and/or historical learning.
-    Ensures that multiple videos scheduled on the same day are spaced out during local daytime hours (9 AM to 7 PM),
-    falling back to target peak hours only when crossing timezone boundaries or night hours.
+    Calculate the next optimized publish time in UTC based on the Geo-Timeline Matrix (4:30 PM to 5:00 AM IST).
+    Maps videos to 6 targeted regional & categorical slots with safe spacing and boundary enforcement.
     """
     from datetime import datetime, timedelta, timezone
+    import sqlite3
     import random
     import config
 
-    # Get the default spacing publish time first as a baseline
-    baseline_time_str = get_safe_upload_time(channel_key)
-    if not country:
-        return baseline_time_str
+    # 1. Lock scheduling offset to Indian Standard Time (IST, +5.5)
+    offset = 5.5
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc + timedelta(hours=offset)
 
-    country = country.upper().strip()
-    
-    # 1. Check database for optimized hour for this channel and country
-    try:
-        from correlation_engine import CorrelationEngine
-        opt_hour_utc = CorrelationEngine.get_optimized_scheduling_offset(channel_key, country)
-    except Exception as e:
-        print(f"[Scheduling] Failed to query correlation engine for scheduling offset: {e}")
-        opt_hour_utc = None
-
-    # 2. Hardcoded fallback active awake hours in UTC if database has no data
-    country_to_utc_hour = {
-        "IN": 8,   # 1:30 PM IST = 8:00 UTC
-        "US": 18,  # 1:00 PM EST = 18:00 UTC
-        "GB": 13,  # 1:00 PM GMT = 13:00 UTC
-        "CA": 18,  # 1:00 PM EST = 18:00 UTC
-        "AU": 3,   # 1:00 PM AEST = 3:00 UTC
-        "UK": 13,  # 1:00 PM GMT = 13:00 UTC
-    }
-
-    if opt_hour_utc is None:
-        opt_hour_utc = country_to_utc_hour.get(country)
-
-    if opt_hour_utc is None:
-        # No timezone mapping, return baseline
-        print(f"[Scheduling] No optimized hour or mapping found for country '{country}'. Using baseline spacing.")
-        return baseline_time_str
-
-    # Parse baseline scheduled time
-    try:
-        if baseline_time_str.endswith("Z"):
-            b_str = baseline_time_str[:-1] + "+00:00"
-        else:
-            b_str = baseline_time_str
-        baseline_dt = datetime.fromisoformat(b_str)
-    except Exception as e:
-        print(f"[Scheduling] Error parsing baseline time '{baseline_time_str}': {e}. Using current time.")
-        baseline_dt = datetime.now(timezone.utc)
-
-    # 3. Timezone-aware daytime scheduling window
-    def get_country_utc_offset(c: str) -> float:
-        offsets = {
-            "IN": 5.5,
-            "US": -5.0,
-            "GB": 0.0,
-            "UK": 0.0,
-            "CA": -5.0,
-            "AU": 10.0,
-            "DE": 1.0,
-            "FR": 1.0,
-            "RU": 3.0,
-            "JP": 9.0,
-            "BR": -3.0,
-            "CN": 8.0,
-        }
-        return offsets.get(c, 0.0)
-
-    offset = get_country_utc_offset(country)
-    local_dt = baseline_dt + timedelta(hours=offset)
-
-    # Allow publishing if the local time falls in 9:00 AM to 7:00 PM local time (9 to 19)
-    if 9 <= local_dt.hour < 19:
-        # Already in daytime window, keep baseline spacing
-        target_local_dt = local_dt
-        print(f"[Scheduling] Keeping baseline time: local time {local_dt.strftime('%H:%M')} is in active window (9 AM - 7 PM)")
+    # 2. Determine batch run_day and locked next-day 5:00 AM boundary
+    boundary_hour = getattr(config, "BATCH_BOUNDARY_HOUR", 5)
+    if now_local.hour < boundary_hour:
+        run_day = now_local.date() - timedelta(days=1)
+        end_time_local = datetime(now_local.year, now_local.month, now_local.day, boundary_hour, 0, 0)
     else:
-        # Outside daytime window, adjust to optimized target hour (lunchtime/peak)
-        opt_local_total_minutes = int((opt_hour_utc * 60) + (offset * 60)) % 1440
-        opt_hour_local = opt_local_total_minutes // 60
-        opt_minute_local = opt_local_total_minutes % 60
+        run_day = now_local.date()
+        tomorrow = now_local + timedelta(days=1)
+        end_time_local = datetime(tomorrow.year, tomorrow.month, tomorrow.day, boundary_hour, 0, 0)
 
-        if local_dt.hour < 9:
-            # Too early in the morning, schedule for today at opt hour
-            target_local_dt = local_dt.replace(
-                hour=opt_hour_local, minute=opt_minute_local, second=0, microsecond=0
-            )
-            print(f"[Scheduling] Shifting forward to peak local time {opt_hour_local:02d}:{opt_minute_local:02d} today")
+    # Convert boundary times to UTC for DB querying
+    start_utc = (datetime(run_day.year, run_day.month, run_day.day, 4, 0, 0) - timedelta(hours=offset)).isoformat() + "Z"
+    end_utc = (end_time_local - timedelta(hours=offset)).isoformat() + "Z"
+
+    # 3. Check SQLite for existing uploads in the current active batch (within start_utc and end_utc)
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT publish_time FROM uploads 
+        WHERE channel_key=? AND (status='uploaded' OR status='scheduled' OR status='uploading')
+        AND publish_time >= ? AND publish_time <= ?
+        ORDER BY publish_time ASC
+    """, (channel_key, start_utc, end_utc))
+    rows = cursor.fetchall()
+    conn.close()
+
+    batch_count = getattr(config, "BATCH_COUNT", 6)
+    n = len(rows)
+
+    # Build slot datetimes for current run_day
+    slot_windows = []
+    for slot_def in GEO_TIMELINE_SLOTS:
+        s_date = run_day + timedelta(days=1) if slot_def.get("next_day") else run_day
+        s_start = datetime(s_date.year, s_date.month, s_date.day, slot_def["start_hour"], slot_def["start_min"], 0)
+        s_end = datetime(s_date.year, s_date.month, s_date.day, slot_def["end_hour"], slot_def["end_min"], 0)
+        slot_windows.append((slot_def, s_start, s_end))
+
+    # Determine which slot to assign
+    assigned_slot_idx = None
+
+    # Check if category or country matches an unassigned slot
+    if country or category:
+        c_low = (country or "").lower().strip()
+        cat_low = (category or "").lower().strip()
+        for idx, (slot_def, s_start, s_end) in enumerate(slot_windows):
+            if idx >= n:
+                region_match = any(r in c_low for r in slot_def["regions"]) if c_low else False
+                category_match = any(cat in cat_low for cat in slot_def["categories"]) if cat_low else False
+                if region_match or category_match:
+                    assigned_slot_idx = idx
+                    break
+
+    if assigned_slot_idx is None:
+        assigned_slot_idx = min(n, len(slot_windows) - 1)
+
+    slot_def, s_start, s_end = slot_windows[assigned_slot_idx]
+
+    # Calculate target time within slot with gentle jitter (e.g. +5 to +25 minutes from slot start)
+    jitter = random.randint(5, 25)
+    scheduled_local = s_start + timedelta(minutes=jitter)
+    print(f"[Scheduling] Mapped to Slot {slot_def['slot']} ({slot_def['name']}) -> {scheduled_local.strftime('%H:%M')} IST")
+
+    # Safety guard 1: Never schedule in the past
+    now_local_naive = now_local.replace(tzinfo=None)
+    if scheduled_local < now_local_naive + timedelta(minutes=10):
+        # Advance to earliest valid slot or now + 10m
+        next_possible = None
+        for idx in range(assigned_slot_idx + 1, len(slot_windows)):
+            _, future_start, future_end = slot_windows[idx]
+            if future_end > now_local_naive + timedelta(minutes=15):
+                next_possible = max(future_start + timedelta(minutes=random.randint(5, 15)), now_local_naive + timedelta(minutes=10))
+                break
+        if next_possible:
+            scheduled_local = next_possible
         else:
-            # Too late in the evening/night, schedule for tomorrow at opt hour
-            tomorrow_local = local_dt + timedelta(days=1)
-            target_local_dt = tomorrow_local.replace(
-                hour=opt_hour_local, minute=opt_minute_local, second=0, microsecond=0
-            )
-            print(f"[Scheduling] Shifting forward to peak local time {opt_hour_local:02d}:{opt_minute_local:02d} tomorrow")
+            scheduled_local = now_local_naive + timedelta(minutes=10)
+        print(f"[Scheduling] Past slot adjusted: scheduled for local time {scheduled_local.strftime('%H:%M')} IST")
 
-    # Add a small random jitter (0 to 30 minutes)
-    jitter_minutes = random.randint(0, 30)
-    target_local_dt += timedelta(minutes=jitter_minutes)
+    # Safety guard 2: Spacing relative to last uploaded/scheduled video in batch
+    if rows:
+        try:
+            last_pub_str = rows[-1][0]
+            if last_pub_str.endswith("Z"):
+                last_pub_str = last_pub_str[:-1] + "+00:00"
+            last_pub_utc = datetime.fromisoformat(last_pub_str).astimezone(timezone.utc)
+            last_pub_local = (last_pub_utc + timedelta(hours=offset)).replace(tzinfo=None)
 
-    # Convert back to UTC
-    target_dt = target_local_dt - timedelta(hours=offset)
+            min_spacing = getattr(config, "BATCH_MIN_SPACING_MINUTES", 30)
+            if (scheduled_local - last_pub_local).total_seconds() < min_spacing * 60:
+                scheduled_local = last_pub_local + timedelta(minutes=min_spacing + random.randint(2, 8))
+                print(f"[Scheduling] Spacing guard pushed slot forward to {scheduled_local.strftime('%H:%M')} IST")
+        except Exception as e:
+            print(f"[Scheduling] Spacing check exception: {e}")
 
-    # Safety guard: ensure we never schedule in the past
-    if target_dt < baseline_dt:
-        target_dt += timedelta(days=1)
+    # Safety guard 3: Boundary enforcement check (5:00 AM next day)
+    boundary_target = end_time_local - timedelta(minutes=15)
+    if scheduled_local > boundary_target:
+        print(f"[Scheduling] Scheduled time crosses 5:00 AM boundary: {scheduled_local.strftime('%H:%M')} > {boundary_target.strftime('%H:%M')}")
+        if rows:
+            try:
+                last_pub_str = rows[-1][0]
+                if last_pub_str.endswith("Z"):
+                    last_pub_str = last_pub_str[:-1] + "+00:00"
+                last_pub_utc = datetime.fromisoformat(last_pub_str).astimezone(timezone.utc)
+                last_pub_local = (last_pub_utc + timedelta(hours=offset)).replace(tzinfo=None)
+                available = (boundary_target - last_pub_local).total_seconds() / 60.0
+                if available > 15:
+                    scheduled_local = last_pub_local + timedelta(minutes=max(10, available / 2))
+                else:
+                    scheduled_local = boundary_target
+            except Exception:
+                scheduled_local = boundary_target
+        else:
+            scheduled_local = boundary_target
+        print(f"[Scheduling] Boundary clamp applied: {scheduled_local.strftime('%H:%M')} IST")
 
-    print(f"[Scheduling] Geo-Targeted scheduling for country '{country}': "
-          f"Baseline: {baseline_time_str} | Scheduled: {target_dt.isoformat().replace('+00:00', 'Z')} "
-          f"(Local: {target_local_dt.strftime('%Y-%m-%d %H:%M:%S')} | Offset: {offset:+.1f}h)")
+    # Safety guard 4: Beyond slot 6 handling for large batches (e.g. n >= 6)
+    if n >= len(slot_windows) and rows:
+        try:
+            last_pub_str = rows[-1][0]
+            if last_pub_str.endswith("Z"):
+                last_pub_str = last_pub_str[:-1] + "+00:00"
+            last_pub_utc = datetime.fromisoformat(last_pub_str).astimezone(timezone.utc)
+            last_pub_local = (last_pub_utc + timedelta(hours=offset)).replace(tzinfo=None)
+            available = (boundary_target - last_pub_local).total_seconds() / 60.0
+            if available > 15:
+                scheduled_local = min(boundary_target, last_pub_local + timedelta(minutes=max(10, available / 2)))
+            else:
+                scheduled_local = boundary_target
+        except Exception as e:
+            print(f"[Scheduling] Extended slot calculation exception: {e}")
 
-    return target_dt.isoformat().replace("+00:00", "Z")
+    # Final conversion to UTC
+    scheduled_utc = scheduled_local - timedelta(hours=offset)
+    scheduled_utc = scheduled_utc.replace(tzinfo=timezone.utc)
+
+    # Ensure never earlier than now_utc + 10m
+    if scheduled_utc < now_utc + timedelta(minutes=10):
+        scheduled_utc = now_utc + timedelta(minutes=10)
+
+    return scheduled_utc.isoformat().replace("+00:00", "Z")
+
 
 
 # ── Auth check helper ──────────────────────────────────────────────────────────
@@ -567,6 +678,43 @@ def run_first_time_auth(channel_key: str) -> None:
         print(f"[Auth] Authentication failed: {e}")
 
 
+def upload_latest_output(channel_key: str):
+    """Upload whatever video is currently sitting in output/news_video.mp4 using output/youtube_metadata.txt."""
+    import re
+    from pathlib import Path
+    import uuid
+    video_path = Path(__file__).resolve().parent / "output" / "news_video.mp4"
+    meta_path = Path(__file__).resolve().parent / "output" / "youtube_metadata.txt"
+    if not video_path.exists():
+        print(f"[Upload] Error: {video_path} not found.")
+        return
+    title = "Breaking News"
+    description = ""
+    tags = "news, breaking news"
+    if meta_path.exists():
+        content = meta_path.read_text(encoding="utf-8")
+        t_match = re.search(r"YOUTUBE TITLE:\s*\n([^\n]+)", content)
+        if t_match:
+            title = t_match.group(1).strip()
+        d_match = re.search(r"YOUTUBE DESCRIPTION:\s*\n(.*?)(?=\n═|\n#|\Z)", content, re.DOTALL)
+        if d_match:
+            description = d_match.group(1).strip()
+        tag_match = re.search(r"TAGS FOR YOUTUBE TAG BOX[^\n]*:\s*\n([^\n]+)", content)
+        if tag_match:
+            tags = tag_match.group(1).strip()
+            
+    run_id = uuid.uuid4().hex[:8]
+    print(f"[Upload] Uploading latest output video: {title}")
+    return upload_video(
+        run_id=run_id,
+        channel_key=channel_key,
+        video_path=str(video_path),
+        title=title,
+        description=description,
+        tags=tags,
+    )
+
+
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -574,6 +722,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="YouTube uploader / auth tool")
     parser.add_argument("--auth",   metavar="CHANNEL", help="Run first-time OAuth for a channel key (e.g. newscup)")
     parser.add_argument("--status", metavar="CHANNEL", help="Check auth status for a channel key")
+    parser.add_argument("--upload-latest", metavar="CHANNEL", help="Upload the existing video sitting in output/news_video.mp4")
     args = parser.parse_args()
 
     if args.auth:
@@ -584,5 +733,7 @@ if __name__ == "__main__":
         print(f"[Status] Authenticated: {result['authenticated']}")
         print(f"[Status] Reason:        {result['reason']}")
         print(f"[Status] Token file:    {result['token_path']}")
+    elif args.upload_latest:
+        upload_latest_output(args.upload_latest)
     else:
         parser.print_help()

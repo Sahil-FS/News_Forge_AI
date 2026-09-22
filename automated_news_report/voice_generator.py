@@ -141,9 +141,20 @@ def _get_kokoro_pipeline():
     return _kokoro_pipeline
 
 
-def generate_audio_kokoro(text, wav_path, context: str = "neutral", voice: str = None, speed: float = None, is_paragraph_end: bool = False, is_verdict: bool = False) -> bool:
+def generate_audio_kokoro(
+    text,
+    wav_path,
+    context: str = "neutral",
+    voice: str = None,
+    speed: float = None,
+    is_paragraph_end: bool = False,
+    is_verdict: bool = False,
+    is_hook: bool = False,
+    speed_multiplier: float = 1.0,
+) -> bool:
     """
     Generate audio via Kokoro TTS with context-aware voice and speed selection.
+    Supports Pillar 2 (0.0s instant punch for hook scene) and Pillar 5 (adaptive speed boost).
     """
     try:
         pipeline = _get_kokoro_pipeline()
@@ -153,20 +164,24 @@ def generate_audio_kokoro(text, wav_path, context: str = "neutral", voice: str =
         import numpy as np
         import soundfile as sf
 
-        # Force baseline speed to 1.22 for English news broadcast to avoid slow audiobook pacing
-        speed = 1.22
+        # Baseline speed: default 1.22 for English news broadcast to avoid slow audiobook pacing
+        base_speed = speed if speed is not None else 1.22
+        if is_verdict:
+            base_speed = 0.90
+            print(f"[Kokoro] Verdict scene: slowing down to base_speed={base_speed}")
+
+        # Pillar 5: Apply adaptive speed boost (1.0x - 1.15x)
+        eff_mult = float(speed_multiplier or 1.0)
+        final_speed = base_speed * eff_mult
+
         if voice is None:
             v_default, _ = get_voice_for_format("briefing", context)
             voice = v_default
 
-        if is_verdict:
-            speed = 0.90
-            print(f"[Kokoro] Verdict scene: slowing down to speed={speed}")
-
-        print(f"[Kokoro] Context='{context}' -> voice='{voice}', speed={speed:.2f}")
+        print(f"[Kokoro] Context='{context}' -> voice='{voice}', speed={final_speed:.2f} (base={base_speed:.2f}, mult={eff_mult:.2f})")
 
         chunks = []
-        for result in pipeline(text, voice=voice, speed=speed):
+        for result in pipeline(text, voice=voice, speed=final_speed):
             # Kokoro 0.9.4 yields KPipeline.Result objects with a .audio
             # attribute that is a PyTorch Tensor of shape [N].
             # Using item[-1] or np.asarray(item) doesn't work --
@@ -188,15 +203,17 @@ def generate_audio_kokoro(text, wav_path, context: str = "neutral", voice: str =
 
         combined = np.concatenate(chunks)
 
-        # Prepend 120ms of leading silence to prevent first-word clipping.
-        # Kokoro generates audio with no leading silence. When MoviePy loads the WAV
-        # and composes it with the whoosh SFX, a sub-frame alignment offset can clip
-        # the very first phoneme. 120ms of silence gives the mixer a safe runway.
+        # Prepend 120ms of leading silence to prevent first-word clipping for standard scenes.
+        # Pillar 2 (0.0s Instant Audio Punch):
+        # For Scene 0 (Hook scene), eliminate the 120ms lead silence buffer so the narration waveform begins immediately at t = 0.0s.
         _SAMPLE_RATE = KOKORO_SAMPLE_RATE
-        _LEAD_SILENCE_MS = KOKORO_LEAD_SILENCE_MS
-        _lead_samples = int(_SAMPLE_RATE * _LEAD_SILENCE_MS / 1000)
-        _lead_silence = np.zeros(_lead_samples, dtype=np.float32)
-        combined = np.concatenate([_lead_silence, combined])
+        if not is_hook:
+            _LEAD_SILENCE_MS = KOKORO_LEAD_SILENCE_MS
+            _lead_samples = int(_SAMPLE_RATE * _LEAD_SILENCE_MS / 1000)
+            _lead_silence = np.zeros(_lead_samples, dtype=np.float32)
+            combined = np.concatenate([_lead_silence, combined])
+        else:
+            print(f"[Kokoro] Hook scene (index 0): 0.0s instant audio punch -- 120ms lead silence buffer eliminated")
 
         if is_paragraph_end:
             _trail_samples = int(_SAMPLE_RATE * 1.0)
@@ -208,7 +225,8 @@ def generate_audio_kokoro(text, wav_path, context: str = "neutral", voice: str =
         ok = os.path.exists(wav_path) and os.path.getsize(wav_path) > 1024
         if ok:
             _dur_s = combined.shape[0] / _SAMPLE_RATE
-            print(f"[Kokoro] Audio saved ({_dur_s:.2f}s incl. 120ms lead) -> {wav_path}")
+            _lead_desc = "0.0s punch" if is_hook else "120ms lead"
+            print(f"[Kokoro] Audio saved ({_dur_s:.2f}s, {_lead_desc}) -> {wav_path}")
             normalize_audio(wav_path)
             if not is_paragraph_end:
                 trim_audio_silence(wav_path)   # remove tail silence for tight scene transitions
@@ -300,7 +318,18 @@ def _ensure_hindi_model() -> bool:
         return False
 
 
-def generate_audio(text: str, index: int, context: str = "neutral", language: str = "en", pause_after_sentence: float = None, video_style: str = "briefing", is_paragraph_end: bool = False, is_verdict: bool = False) -> str | None:
+def generate_audio(
+    text: str,
+    index: int,
+    context: str = "neutral",
+    language: str = "en",
+    pause_after_sentence: float = None,
+    video_style: str = "briefing",
+    is_paragraph_end: bool = False,
+    is_verdict: bool = False,
+    adaptive_speed_boost: float = 1.0,
+    speed_multiplier: float = 1.0,
+) -> str | None:
     """
     Use Kokoro/Piper TTS to synthesise *text* and write a WAV file to AUDIO_DIR.
 
@@ -314,6 +343,8 @@ def generate_audio(text: str, index: int, context: str = "neutral", language: st
         language: language of the script ("en" or "hi")
         pause_after_sentence: pause between sentences
         video_style: video format ("briefing", "context", "tracker")
+        adaptive_speed_boost: milestone pace speed boost (Pillar 5: 1.0x - 1.15x)
+        speed_multiplier: optional manual speed multiplier
 
     Returns the WAV path on success, None on failure.
     """
@@ -325,6 +356,8 @@ def generate_audio(text: str, index: int, context: str = "neutral", language: st
         os.remove(wav_path)
 
     is_hindi = (language == "hi")
+    eff_speed_multiplier = float(adaptive_speed_boost or 1.0) * float(speed_multiplier or 1.0)
+    is_hook = (index == 0 or index == 100)
     
     # Resolve dynamic format schedule voice and speed
     active_voice, active_speed = get_voice_for_format(video_style, context)
@@ -336,8 +369,18 @@ def generate_audio(text: str, index: int, context: str = "neutral", language: st
     # Hindi is not supported natively by local Kokoro pipelines - force Piper
     if KOKORO_AVAILABLE and not is_hindi:
         print(f"[VoiceGen] Generating English audio for scene {index} via Kokoro...")
-        print(f"[VoiceGen] Voice: '{active_voice}' (speed={active_speed:.2f})")
-        if generate_audio_kokoro(text, wav_path, context=context, voice=active_voice, speed=active_speed, is_paragraph_end=is_paragraph_end, is_verdict=is_verdict):
+        print(f"[VoiceGen] Voice: '{active_voice}' (speed={active_speed:.2f}, boost={eff_speed_multiplier:.2f})")
+        if generate_audio_kokoro(
+            text,
+            wav_path,
+            context=context,
+            voice=active_voice,
+            speed=active_speed,
+            is_paragraph_end=is_paragraph_end,
+            is_verdict=is_verdict,
+            is_hook=is_hook,
+            speed_multiplier=eff_speed_multiplier,
+        ):
             print(f"[VoiceGen][Kokoro] Audio saved -> {wav_path}")
             return wav_path
 
@@ -354,6 +397,7 @@ def generate_audio(text: str, index: int, context: str = "neutral", language: st
         active_model = PIPER_MODEL
 
     # Inverse speed mapping for Piper length_scale
+    active_speed = active_speed * eff_speed_multiplier
     base_length = PIPER_LENGTH_SCALE_EN if not is_hindi else PIPER_LENGTH_SCALE_HI
     length_scale_val = base_length / active_speed
 

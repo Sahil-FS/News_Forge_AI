@@ -72,7 +72,7 @@ def generate_run_sequence(categories: list[str], ratio_str: str, count: int) -> 
 
 def main():
     parser = argparse.ArgumentParser(description="AI News Video Batch Runner")
-    parser.add_argument("--count", type=int, default=10, help="Number of videos to generate in this batch")
+    parser.add_argument("--count", type=int, default=6, help="Number of videos to generate in this batch")
     parser.add_argument("--channel", choices=["newscup", "newscup_india"], default="newscup", help="YouTube channel key")
     parser.add_argument("--categories", default="general", help="Comma-separated categories (e.g. general)")
     parser.add_argument("--ratio", default="", help="Colon-separated ratio (e.g. 1). Defaults to 1 for each category.")
@@ -80,6 +80,7 @@ def main():
     parser.add_argument("--upload-spacing", type=int, help="Upload spacing between videos in minutes")
     parser.add_argument("--upload-jitter-min", type=int, help="Minimum upload scheduling jitter in minutes")
     parser.add_argument("--upload-jitter-max", type=int, help="Maximum upload scheduling jitter in minutes")
+    parser.add_argument("--no-sync", action="store_true", help="Skip automatic YouTube analytics sync before batch run")
     args, unknown = parser.parse_known_args()
 
     categories_list = [c.strip() for c in args.categories.split(",") if c.strip()]
@@ -96,6 +97,29 @@ def main():
     print(f"Channel: {args.channel} | Categories: {categories_list} (Ratio: {ratio_str})")
     print(f"Plan: {run_sequence}")
     print("=" * 60)
+
+    # ── Automated Learning Loop: Sync Analytics for past mature videos ──
+    if not args.no_sync:
+        try:
+            from db_manager import get_videos_due_for_analytics_sync
+            from analytics_puller import AnalyticsPuller
+            from correlation_engine import CorrelationEngine
+            
+            due_videos = get_videos_due_for_analytics_sync(min_age_hours=24.0)
+            if due_videos:
+                print(f"[Batch Runner] 🧠 Auto-Learning Loop: Found {len(due_videos)} past video(s) ready for analytics sync.")
+                # Sync up to 5 per batch run to keep batch startup fast
+                for item in due_videos[:5]:
+                    try:
+                        AnalyticsPuller.sync_video_metrics(item["run_id"], item["video_url"])
+                    except Exception as sync_e:
+                        print(f"[Batch Runner] Analytics sync notice for {item['run_id']}: {sync_e}")
+                CorrelationEngine.detect_and_flag_outliers(channel_key=args.channel)
+                print(f"[Batch Runner] 🧠 Analytics sync complete. Updated learning parameters for channel: {args.channel}\n")
+            else:
+                print(f"[Batch Runner] 🧠 Auto-Learning Loop: Analytics are up to date.\n")
+        except Exception as e:
+            print(f"[Batch Runner] Notice: Auto-analytics sync check bypassed: {e}\n")
 
     # Force AUTO_UPLOAD to always be 'true' for batch runs
     os.environ["AUTO_UPLOAD"] = "true"

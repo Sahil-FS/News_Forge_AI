@@ -44,7 +44,7 @@ def generate_location_map(location: str, output_path: str, coord_override: tuple
 
     Dependencies used (all already available in the project):
       - geopy.geocoders.Nominatim   (free, no API key)
-      - CartoDB Dark-Matter tiles   (free, no API key, fetched via requests)
+      - ESRI World Dark Gray Canvas (free, no API key, watermark-free, dark-mode)
       - PIL / Pillow                (already used in video_builder)
       - requests                    (already used in image_fetcher)
 
@@ -123,27 +123,43 @@ def generate_location_map(location: str, output_path: str, coord_override: tuple
 
         cx_tile, cy_tile = _deg2tile(lat, lon, ZOOM)
 
-        # -- 3. Fetch 3x3 tile grid ----------------------------------------
-        TILE_URL  = (
-            "https://cartodb-basemaps-a.global.ssl.fastly.net"
-            "/dark_all/{z}/{x}/{y}.png"
+        # -- 3. Fetch 3x3 tile grid (ESRI World Dark Gray Canvas Base + Reference) --
+        BASE_TILE_URL = (
+            "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+        )
+        REF_TILE_URL = (
+            "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}"
         )
         HDR       = {"User-Agent": "NewsVideoBot/2.0 (educational)"}
         canvas_px = TILE_SIZE * GRID   # 768 px
-        canvas    = _Image.new("RGB", (canvas_px, canvas_px), (20, 20, 30))
+        canvas    = _Image.new("RGBA", (canvas_px, canvas_px), (20, 20, 30, 255))
 
         for dy in range(-HALF, HALF + 1):
             for dx in range(-HALF, HALF + 1):
-                url = (TILE_URL
-                       .replace("{z}", str(ZOOM))
-                       .replace("{x}", str(cx_tile + dx))
-                       .replace("{y}", str(cy_tile + dy)))
+                tx = cx_tile + dx
+                ty = cy_tile + dy
+                base_url = (BASE_TILE_URL
+                            .replace("{z}", str(ZOOM))
+                            .replace("{y}", str(ty))
+                            .replace("{x}", str(tx)))
+                ref_url = (REF_TILE_URL
+                           .replace("{z}", str(ZOOM))
+                           .replace("{y}", str(ty))
+                           .replace("{x}", str(tx)))
                 tile_loaded = False
                 for _tile_attempt in range(MAP_TILE_FETCH_RETRIES):
                     try:
-                        r = _req.get(url, headers=HDR, timeout=8)
-                        if r.status_code == 200:
-                            tile = _Image.open(io.BytesIO(r.content)).convert("RGB")
+                        r_base = _req.get(base_url, headers=HDR, timeout=8)
+                        if r_base.status_code == 200:
+                            tile = _Image.open(io.BytesIO(r_base.content)).convert("RGBA")
+                            # Layer reference overlay (borders and labels)
+                            try:
+                                r_ref = _req.get(ref_url, headers=HDR, timeout=6)
+                                if r_ref.status_code == 200:
+                                    ref_tile = _Image.open(io.BytesIO(r_ref.content)).convert("RGBA")
+                                    tile = _Image.alpha_composite(tile, ref_tile)
+                            except Exception:
+                                pass
                             canvas.paste(tile,
                                          ((dx + HALF) * TILE_SIZE,
                                           (dy + HALF) * TILE_SIZE))
@@ -151,9 +167,11 @@ def generate_location_map(location: str, output_path: str, coord_override: tuple
                             break
                     except Exception as exc:
                         if _tile_attempt == MAP_TILE_FETCH_RETRIES - 1:
-                            print(f"[MAP] Tile ({dx},{dy}) failed after {MAP_TILE_FETCH_RETRIES} attempts: {exc}")
+                            print(f"[MAP] ESRI Tile ({dx},{dy}) failed after {MAP_TILE_FETCH_RETRIES} attempts: {exc}")
                         import time as _tile_time
                         _tile_time.sleep(MAP_TILE_BACKOFF_SECS * (_tile_attempt + 1))
+
+        canvas = canvas.convert("RGB")
 
         # -- 4. Calculate pixel position of the pin ------------------------
         nw_lat, nw_lon = _tile2nw(cx_tile - HALF,        cy_tile - HALF,        ZOOM)
@@ -561,7 +579,9 @@ def _build_semantic_query(scene: dict) -> str:
         "show", "shows", "showing", "dozens", "hundreds", "thousands",
         "videos", "video", "footage", "live", "latest", "updates",
         "highlights", "told", "said", "added", "years", "year",
-        "since", "amid", "following", "news"
+        "since", "amid", "following", "news",
+        # Suppress non-visual / misleading words that cause stock hallucinations
+        "sister", "brother", "families", "locomotive", "dummy", "mannequin",
     }
     words = []
     for word in text.split():
@@ -575,13 +595,13 @@ def _build_semantic_query(scene: dict) -> str:
 
     # Build mandatory anchor: country + type
     type_anchor = {
-        "war":        "military conflict",
-        "politics":   "government official",
-        "technology": "technology innovation",
-        "business":   "economy finance",
-        "disaster":   "emergency crisis",
-        "general":    "news",
-    }.get(scene_type, "news")
+        "war":        "military conflict Reuters press photo",
+        "politics":   "government politics AP news press photo",
+        "technology": "technology innovation news photo",
+        "business":   "economy finance photojournalism",
+        "disaster":   "emergency disaster Reuters press photo",
+        "general":    "breaking news photojournalism",
+    }.get(scene_type, "news photojournalism")
 
     # Build the query in layers: anchor -> person -> keywords -> suffix
     parts = []
@@ -594,7 +614,10 @@ def _build_semantic_query(scene: dict) -> str:
         # Only add the MOST meaningful 2 words (not generic verbs)
         meaningful = [w for w in words if len(w) > 4][:2]
         parts.extend(meaningful)
-    parts.append("news photo")
+    if scene_type in ("war", "politics", "disaster"):
+        parts.append("photojournalism")
+    else:
+        parts.append("press photo")
 
     query = " ".join(parts)
     return query
@@ -728,21 +751,21 @@ def _build_query(scene: dict) -> list[str]:
         semantic_query,
     ]
 
-    # Add type-specific queries
+    # Add type-specific queries with editorial news anchoring
     if scene_type == "politics":
         queries.extend([
-            f"{keyword} government politics news realistic photo",
-            f"{keyword} political news realistic photo",
-            f"{keyword} leader news realistic photo",
-            f"{keyword} news realistic photo"
+            f"{keyword} government politics Reuters press photo",
+            f"{keyword} political AP news photojournalism",
+            f"{keyword} leader press photo Reuters",
+            f"{keyword} AP news photojournalism"
         ])
 
     elif scene_type == "war":
         queries.extend([
-            f"{keyword} military conflict news realistic photo",
-            f"{keyword} war news realistic photo",
-            f"{keyword} conflict news realistic photo",
-            f"{keyword} news realistic photo"
+            f"{keyword} military conflict Reuters press photo",
+            f"{keyword} war AP news photojournalism",
+            f"{keyword} conflict Reuters photojournalism",
+            f"{keyword} press photo Reuters"
         ])
 
     elif scene_type == "technology":
@@ -755,18 +778,18 @@ def _build_query(scene: dict) -> list[str]:
 
     elif scene_type == "business":
         queries.extend([
-            f"{keyword} business market news realistic photo",
-            f"{keyword} economy news realistic photo",
+            f"{keyword} business market photojournalism",
+            f"{keyword} economy Reuters press photo",
             f"{keyword} market news realistic photo",
-            f"{keyword} news realistic photo"
+            f"{keyword} AP news photojournalism"
         ])
 
     elif scene_type == "disaster":
         queries.extend([
-            f"{keyword} emergency disaster news realistic photo",
-            f"{keyword} disaster news realistic photo",
-            f"{keyword} emergency news realistic photo",
-            f"{keyword} news realistic photo"
+            f"{keyword} emergency disaster Reuters press photo",
+            f"{keyword} disaster AP news photojournalism",
+            f"{keyword} emergency Reuters photojournalism",
+            f"{keyword} press photo Reuters"
         ])
 
     elif scene_type == "sports" or scene_type == "football":
@@ -802,14 +825,15 @@ def _build_query(scene: dict) -> list[str]:
             q = q.strip()
             if q and q.lower() not in seen:
                 seen.add(q.lower())
-                # Add "news realistic photo" to all fallback queries  
-                queries.append(f"{q} news realistic photo")
+                # Add editorial press photo to fallback queries  
+                queries.append(f"{q} Reuters press photo")
 
-    # Ensure all queries end with proper suffix
+    # Ensure all queries end with proper editorial / realistic suffix
     final_queries = []
+    _EDITORIAL_TERMS = ("news realistic photo", "press photo", "reuters", "ap news", "photojournalism", "afp")
     for q in queries:
-        if "news realistic photo" not in q.lower():
-            q = f"{q} news realistic photo"
+        if not any(t in q.lower() for t in _EDITORIAL_TERMS):
+            q = f"{q} press photo photojournalism"
         final_queries.append(q)
 
     return final_queries
@@ -1812,7 +1836,17 @@ def scrape_editorial_image(url: str) -> str | None:
     return None
 
 def _is_stock_drift(url: str, query: str, scene_type: str = "general") -> bool:
-    drift_kws = ["3d", "render", "illustration", "toy", "metaphor"]
+    # Universal stock drift & hallucination negative keywords
+    drift_kws = [
+        # 3D, renders, artificial
+        "3d", "render", "illustration", "toy", "metaphor", "mannequin", "dummy",
+        "3d-render", "clipart", "stock-vector", "vector",
+        # Costumes & reenactments
+        "costume", "cosplay", "pirate", "reenactment", "vintage-portrait", "actor",
+        # Unrelated family / baby photos
+        "baby", "infant", "newborn", "toddler", "maternity", "nursery",
+        "smiling-family", "party", "balloons", "birthday",
+    ]
     u = url.lower()
     q = query.lower()
     for kw in drift_kws:

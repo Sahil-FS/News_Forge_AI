@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from channel_profiles import get_channel_profile, public_channel_profiles
-from db_manager import get_db_connection
+from db_manager import get_db_connection, promote_scheduled_uploads
 from youtube_uploader import upload_video
 from scene_planner import plan_scenes
 
@@ -583,6 +583,9 @@ class Handler(BaseHTTPRequestHandler):
             force_mock = bool(payload.get("force_mock", False))
             
             try:
+                # Auto-promote scheduled uploads that have passed their publish_time
+                promote_scheduled_uploads()
+
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 

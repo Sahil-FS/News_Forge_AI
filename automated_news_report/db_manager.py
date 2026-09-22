@@ -4,9 +4,192 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import datetime
 from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent / "db.sqlite"
+
+
+def promote_scheduled_uploads() -> None:
+    """Find scheduled uploads in the database whose publish_time has passed and mark them as uploaded."""
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT run_id, publish_time FROM uploads WHERE status='scheduled'")
+        rows = cursor.fetchall()
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        promoted = []
+        
+        for row in rows:
+            r_id = row["run_id"]
+            pub_str = row["publish_time"]
+            if pub_str:
+                if pub_str.endswith("Z"):
+                    pub_str = pub_str[:-1] + "+00:00"
+                try:
+                    pub_dt = datetime.datetime.fromisoformat(pub_str)
+                    if pub_dt <= now_utc:
+                        cursor.execute("UPDATE uploads SET status='uploaded' WHERE run_id=?", (r_id,))
+                        promoted.append(r_id)
+                except Exception as e:
+                    print(f"[DB] Error parsing publish_time for run {r_id}: {e}")
+        
+        if promoted:
+            conn.commit()
+            print(f"[DB] Auto-promoted {len(promoted)} scheduled run(s) to 'uploaded'.")
+        conn.close()
+    except Exception as e:
+        print(f"[DB Error] promote_scheduled_uploads failed: {e}")
+
+
+def get_videos_due_for_analytics_sync(min_age_hours: float = 24.0, max_sync_age_hours: float = 72.0) -> list[dict]:
+    """
+    Find uploaded videos that are mature enough to have YouTube analytics (>min_age_hours old)
+    and either have never been synced or haven't been synced in max_sync_age_hours.
+    """
+    promote_scheduled_uploads()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    due_videos = []
+    
+    try:
+        cursor.execute("""
+            SELECT u.run_id, u.channel_key, u.video_url, u.publish_time,
+                   va.updated_at as last_synced_at
+            FROM uploads u
+            LEFT JOIN video_analytics va ON u.run_id = va.run_id
+            WHERE u.status = 'uploaded' AND u.video_url IS NOT NULL
+        """)
+        rows = cursor.fetchall()
+        for row in rows:
+            url = row["video_url"]
+            if not url or "youtube.com" not in url or "8aa7425fa64" in url:
+                continue
+            pub_str = row["publish_time"]
+            if pub_str:
+                if pub_str.endswith("Z"):
+                    pub_str = pub_str[:-1] + "+00:00"
+                try:
+                    pub_dt = datetime.datetime.fromisoformat(pub_str)
+                    age_hours = (now_utc - pub_dt).total_seconds() / 3600.0
+                    if age_hours < min_age_hours:
+                        continue  # Too new, YouTube analytics won't have processed yet
+                except Exception:
+                    pass
+            
+            last_sync = row["last_synced_at"]
+            if last_sync is None:
+                due_videos.append(dict(row))
+            else:
+                sync_age_hours = (time.time() - last_sync) / 3600.0
+                if sync_age_hours >= max_sync_age_hours:
+                    due_videos.append(dict(row))
+    except Exception as e:
+        print(f"[DB Error] get_videos_due_for_analytics_sync failed: {e}")
+    finally:
+        conn.close()
+    return due_videos
+
+
+def get_milestone_pace_status(target_views: int = 10_000_000, target_subscribers: int = 1_000, target_days: int = 90) -> dict:
+    """
+    Calculate progress towards the 90-day milestone (e.g. 10M views & 1000 subscribers)
+    and return adaptive production adjustments.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    now_ts = time.time()
+    
+    try:
+        cursor.execute("SELECT id, start_timestamp FROM growth_milestones ORDER BY id ASC LIMIT 1")
+        row = cursor.fetchone()
+        if not row:
+            # Look at earliest upload to estimate true start time
+            cursor.execute("SELECT MIN(publish_time) FROM uploads WHERE status='uploaded'")
+            earliest_row = cursor.fetchone()
+            start_ts = now_ts
+            if earliest_row and earliest_row[0]:
+                try:
+                    pub_str = earliest_row[0].replace("Z", "+00:00")
+                    start_ts = datetime.datetime.fromisoformat(pub_str).timestamp()
+                except Exception:
+                    start_ts = now_ts
+            cursor.execute("""
+                INSERT INTO growth_milestones (target_views, target_subscribers, start_timestamp, target_days, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (target_views, target_subscribers, start_ts, target_days, now_ts))
+            conn.commit()
+        else:
+            start_ts = row["start_timestamp"]
+
+        # Aggregate current channel metrics
+        cursor.execute("SELECT SUM(views), SUM(subscribers_gained), COUNT(*) FROM video_analytics WHERE is_outlier=0")
+        agg = cursor.fetchone()
+        total_views = int(agg[0] or 0)
+        total_subs = int(agg[1] or 0)
+        total_videos = int(agg[2] or 0)
+
+        days_elapsed = max(0.5, (now_ts - start_ts) / 86400.0)
+        days_remaining = max(1.0, target_days - days_elapsed)
+        
+        expected_daily_velocity = target_views / target_days
+        expected_views_to_date = expected_daily_velocity * days_elapsed
+        pace_ratio = round(total_views / max(1.0, expected_views_to_date), 3)
+        required_daily_velocity = round(max(0, target_views - total_views) / days_remaining)
+
+        # Adaptive production parameters based on pace
+        if pace_ratio >= 1.0:
+            pace_status = "ahead"
+            viral_threshold = 65
+            recommended_word_target = 200
+            recommended_cut_speed = 2.8
+            speed_boost = 1.0
+        elif pace_ratio >= 0.5:
+            pace_status = "behind"
+            viral_threshold = 72
+            recommended_word_target = 160
+            recommended_cut_speed = 2.4
+            speed_boost = 1.08
+        else:
+            pace_status = "critically_behind"
+            viral_threshold = 75
+            recommended_word_target = 140
+            recommended_cut_speed = 2.0
+            speed_boost = 1.15
+
+        return {
+            "target_views": target_views,
+            "target_subscribers": target_subscribers,
+            "target_days": target_days,
+            "days_elapsed": round(days_elapsed, 1),
+            "days_remaining": round(days_remaining, 1),
+            "total_views": total_views,
+            "total_subscribers": total_subs,
+            "total_synced_videos": total_videos,
+            "pace_ratio": pace_ratio,
+            "pace_status": pace_status,
+            "required_daily_velocity": required_daily_velocity,
+            "adaptive_viral_threshold": viral_threshold,
+            "adaptive_word_target": recommended_word_target,
+            "adaptive_cut_speed": recommended_cut_speed,
+            "adaptive_speed_boost": speed_boost,
+        }
+    except Exception as e:
+        print(f"[DB Error] get_milestone_pace_status: {e}")
+        return {
+            "target_views": target_views,
+            "pace_status": "default",
+            "adaptive_viral_threshold": 70,
+            "adaptive_word_target": 180,
+            "adaptive_cut_speed": 2.4,
+            "adaptive_speed_boost": 1.0,
+        }
+    finally:
+        conn.close()
+
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -238,6 +421,18 @@ def init_db() -> None:
         story_summary TEXT,
         channel_key TEXT NOT NULL,
         status TEXT DEFAULT 'active'
+    )
+    """)
+
+    # 10. Growth milestones table (90-day targets)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS growth_milestones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_views INTEGER DEFAULT 10000000,
+        target_subscribers INTEGER DEFAULT 1000,
+        start_timestamp REAL,
+        target_days INTEGER DEFAULT 90,
+        created_at REAL NOT NULL
     )
     """)
 

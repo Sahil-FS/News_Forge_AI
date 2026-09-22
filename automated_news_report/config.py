@@ -174,8 +174,8 @@ DDG_MAX_RESULTS            = 8        # max DuckDuckGo image results per query
 # ── Video Builder Tuning ─────────────────────────────────────────────────────
 KEN_BURNS_ZOOM_FACTOR      = 0.15     # Ken Burns zoom amount (1.0 → 1.0+factor)
 KEN_BURNS_LANDSCAPE_FACTOR = 0.08     # Ken Burns zoom for landscape format
-OUTRO_MIN_DURATION         = 2.5      # minimum outro scene duration in seconds
-OUTRO_MAX_DURATION         = 9.5      # maximum outro scene duration in seconds
+OUTRO_MIN_DURATION         = 1.0      # snappy outro floor (seconds) to prevent retention drops
+OUTRO_MAX_DURATION         = 1.5      # maximum outro scene duration in seconds (<=1.5s max)
 CAPTION_MAX_VISIBLE_WORDS  = 10       # max words shown in progressive caption
 CAPTION_LEAD_SECS          = 0.10     # caption appears this many seconds early
 AUDIO_TAIL_BUFFER_SECS     = 0.30     # buffer added to scene duration after audio
@@ -233,9 +233,14 @@ AUTO_UPLOAD_PRIVACY        = os.environ.get("AUTO_UPLOAD_PRIVACY", "private")
 AUTO_UPLOAD_CATEGORY_ID    = "25"
 
 # YouTube Upload Spacing / Schedule Configuration (in minutes)
-UPLOAD_SPACING_MINUTES     = int(os.environ.get("UPLOAD_SPACING_MINUTES", 150))
+UPLOAD_SPACING_MINUTES     = int(os.environ.get("UPLOAD_SPACING_MINUTES", 100))
 UPLOAD_JITTER_MIN          = int(os.environ.get("UPLOAD_JITTER_MIN", 15))
 UPLOAD_JITTER_MAX          = int(os.environ.get("UPLOAD_JITTER_MAX", 45))
+BATCH_COUNT                = int(os.environ.get("BATCH_COUNT", 6))
+
+# Next-day boundary and safety spacing for batch schedules
+BATCH_BOUNDARY_HOUR        = int(os.environ.get("BATCH_BOUNDARY_HOUR", 5))
+BATCH_MIN_SPACING_MINUTES   = int(os.environ.get("BATCH_MIN_SPACING_MINUTES", 30))
 
 # Install check reminder
 _YT_DEPS = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]

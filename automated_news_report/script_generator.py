@@ -16,7 +16,11 @@ print(f"[ENV OK] {sys.executable}")
 
 import heapq
 import re
-import spacy
+try:
+    import spacy
+except Exception:
+    spacy = None
+from nlp_loader import get_nlp
 import requests
 
 from utils import clean_caption_text
@@ -269,13 +273,7 @@ MAX_VIDEO_SEC = 55
 MIN_VIDEO_SEC = 45
 
 # ── spaCy model ───────────────────────────────────────────────────────────────
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    raise OSError(
-        "[ScriptGen] spaCy model not found. Run:\n"
-        "  python -m spacy download en_core_web_sm"
-    )
+nlp = get_nlp()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -551,8 +549,18 @@ def _run_ollama_model(prompt: str, model: str) -> tuple[str, str, int]:
 
 
 def generate_script_with_ollama(input_text, target_words, context: str = "neutral", top_performing_templates: list = None, channel_key: str = "newscup"):
-    # Force deep-dive word count (200-300 words) for premium news broadcast
-    target_words = max(200, min(target_words, 260))
+    # Adaptive word count target driven by 90-day milestone pace governor
+    try:
+        from db_manager import get_milestone_pace_status
+        pace_info = get_milestone_pace_status()
+        adaptive_target = pace_info.get("adaptive_word_target")
+        if adaptive_target:
+            target_words = adaptive_target
+            print(f"[ScriptGen] Milestone Governor active: Target word count set to {target_words} words for maximum retention")
+    except Exception:
+        pass
+
+    target_words = max(130, min(target_words, 260))
 
     template_block = ""
     if top_performing_templates:
@@ -595,35 +603,35 @@ def generate_script_with_ollama(input_text, target_words, context: str = "neutra
 
     if context == "sports":
         style_prompt = (
-            "You are writing a highly engaging, viral football/sports news narration script (200 to 300 words) for YT Shorts, Reels, and TikTok.\n"
+            f"You are writing a highly engaging, viral football/sports news narration script ({target_words - 20} to {target_words + 20} words) for YT Shorts, Reels, and TikTok.\n"
             "Your style is fast-paced, high-retention, and captivating, focusing on spotlight players, key matches, transfers, or legendary moments.\n\n"
             "ONLY use facts from the ARTICLE below. Do NOT invent any new people, numbers, events, claims, or details.\n\n"
             "MANDATORY NARRATIVE STRUCTURE:\n"
             "You MUST structurally layer the script exactly into the following five parts, sequentially:\n"
-            "1. [Urgent Hook]: Grab attention immediately in the first 3 seconds with a shocking or explosive headline fact, player stat, or transfer rumor.\n"
+            "1. [Urgent 0.0s Hook]: Grab attention instantly on syllable one with a shocking headline fact, player stat, or transfer rumor. No filler, no intro.\n"
             "2. [Core News Event]: State the central news event, matches, teams, and players involved.\n"
             "3. [Official Statements/Direct Quotes]: Provide statements, social posts, or statistics. You MUST tag this evidence explicitly using string markers in the text output:\n"
             "   - Wrap direct quotes in: [QUOTE: \"exact quote text\"]\n"
             "   - Wrap social posts/tweets in: [TWEET: \"@username: post content\"]\n"
             "   - Wrap official report/statistics in: [DOCUMENT: \"exact fact or statistical data\"]\n"
             "4. [Geopolitical Fallout/Contextual Backstory]: Explain the significance, team standings, player records, or broader impact on the league.\n"
-            "5. [Anchored Engagement Call-To-Action]: Provide a direct, sports-focused CTA inviting viewers to subscribe and comment on their prediction or favorite player.\n\n"
+            "5. [Infinite Retention Loop Outro]: The script's final sentence must create a seamless grammatical or conceptual loop that leads straight back into the opening hook line when the video auto-replays on YouTube Shorts.\n\n"
         )
     else:
         style_prompt = (
-            "You are writing a comprehensive, deep-dive global news broadcast narration script (200 to 300 words).\n"
+            f"You are writing a comprehensive, high-retention global news broadcast narration script ({target_words - 20} to {target_words + 20} words).\n"
             "Your style is highly authoritative, premium, and professional -- like a BBC or Sky News anchor.\n\n"
             "ONLY use facts from the ARTICLE below. Do NOT invent any new people, numbers, events, claims, or details.\n\n"
             "MANDATORY NARRATIVE STRUCTURE:\n"
             "You MUST structurally layer the script exactly into the following five parts, sequentially:\n"
-            "1. [Urgent Hook]: Grab attention immediately with an urgent, specific headline fact or major breaking development.\n"
+            "1. [Urgent 0.0s Hook]: Grab attention instantly on syllable one with an urgent, specific headline fact or major breaking development. Zero filler or greeting.\n"
             "2. [Core News Event]: State the central news event, locations, key actors, and core actions.\n"
             "3. [Official Statements/Direct Quotes]: Provide official statements, social media posts, or document evidence. You MUST tag this evidence explicitly using string markers in the text output:\n"
             "   - Wrap direct quotes in: [QUOTE: \"exact quote text\"]\n"
             "   - Wrap social posts/tweets in: [TWEET: \"@username: post content\"]\n"
             "   - Wrap official report/statistics in: [DOCUMENT: \"exact fact or statistical data\"]\n"
             "4. [Geopolitical Fallout/Contextual Backstory]: Explain the history, underlying tensions, debate, or broader significance of this event.\n"
-            "5. [Anchored Engagement Call-To-Action]: Provide a direct CTA inviting viewers to subscribe and comment on the situation.\n\n"
+            "5. [Infinite Retention Loop Outro]: The script's final sentence must create a seamless grammatical or conceptual loop that leads straight back into the opening hook line when the video auto-replays on YouTube Shorts.\n\n"
         )
 
     prompt = (
@@ -632,11 +640,13 @@ def generate_script_with_ollama(input_text, target_words, context: str = "neutra
         "- Do not use any named entities that are not in the names/locations block below.\n"
         f"{_entity_block}\n\n"
         "STRICT RULES:\n"
+        "- 0.0s INSTANT HOOK: The very first word must start the active story immediately. NEVER begin with 'In', 'Today', 'Recently', 'Hello', 'Welcome', or 'In this video'.\n"
+        "- MANDATORY INFINITE LOOP: The very last sentence must be an open loop that connects seamlessly into the opening sentence. When the short replays, it should sound like a continuous sentence or answer to the ending question.\n"
         "- Every single sentence must be grammatically complete (subject + verb + specific object).\n"
         "- Never end a sentence on a preposition (to, of, in, on, by, for), a conjunction (and, but, or), or a loose adjective.\n"
         "- Do not output any meta-commentary, headers, section labels (such as '[Urgent Hook]' or '1.'), numbering, or notes. Output ONLY the raw script text with the source tags embedded.\n"
         "- Avoid passive voice. Speak with confident authority.\n\n"
-        f"LENGTH: 200 to 300 words total.\n\n"
+        f"LENGTH: {target_words - 20} to {target_words + 20} words total.\n\n"
         f"{template_block}"
         f"ARTICLE:\n{input_text}"
     )
@@ -1274,61 +1284,85 @@ def generate_dynamic_cta(headline: str, context: str, channel_name: str = "newsc
     """
     DEFAULTS = {
         "tense": {
-            "main_line":   "Could this spark a global conflict?",
-            "sub_line":    "Share your view in the comments.",
-            "engage_line": f"Subscribe to {channel_name} for breaking news.",
+            "main_line":   "Could this ignite a major conflict?",
+            "sub_line":    "Drop your take below before it's too late.",
+            "engage_line": f"The next 24 to 48 hours are critical. Subscribe to {channel_name} for real-time unvarnished updates.",
         },
         "war": {
-            "main_line":   "Is the world on the edge of all-out war?",
+            "main_line":   "Is the world standing on the brink of wider war?",
             "sub_line":    "Tell us what you think below.",
-            "engage_line": f"Follow {channel_name} for live conflict updates.",
+            "engage_line": f"The next 24 to 48 hours are critical. Subscribe to {channel_name} for real-time unvarnished updates.",
         },
         "politics": {
-            "main_line":   "Will this decision change history?",
-            "sub_line":    "Share your take in the comments.",
-            "engage_line": f"Subscribe to {channel_name} for political coverage.",
+            "main_line":   "Which side do you stand on?",
+            "sub_line":    "Drop your view in the comments.",
+            "engage_line": f"Subscribe to {channel_name} for daily factual breakdowns.",
         },
         "serious": {
-            "main_line":   "Who is responsible for this tragedy?",
-            "sub_line":    "Share this to raise awareness.",
-            "engage_line": f"Follow {channel_name} for the latest developments.",
+            "main_line":   "Who is really responsible for this crisis?",
+            "sub_line":    "Comment below to join the discussion.",
+            "engage_line": f"Developing story. Subscribe to {channel_name} for Part 2.",
         },
         "positive": {
-            "main_line":   "Is this the breakthrough we have been waiting for?",
-            "sub_line":    "Tell us your thoughts below.",
-            "engage_line": f"Subscribe to {channel_name} for more inspiring stories.",
+            "main_line":   "Is this the breakthrough that changes everything?",
+            "sub_line":    "Share your reaction in the comments.",
+            "engage_line": f"Subscribe to {channel_name} for daily breakthroughs.",
         },
         "informative": {
-            "main_line":   "How will this change your daily life?",
-            "sub_line":    "Share your point of view below.",
-            "engage_line": f"Follow {channel_name} for daily science and tech news.",
+            "main_line":   "How will this impact your daily life?",
+            "sub_line":    "Drop your analysis below.",
+            "engage_line": f"Follow {channel_name} for daily critical intel.",
         },
         "business": {
-            "main_line":   "Could this crash the global economy?",
-            "sub_line":    "Drop your analysis in the comments.",
-            "engage_line": f"Subscribe to {channel_name} for market updates.",
+            "main_line":   "Could this trigger an economic shockwave?",
+            "sub_line":    "Share your market prediction below.",
+            "engage_line": f"The situation is evolving fast. Subscribe to {channel_name}.",
         },
         "disaster": {
-            "main_line":   "How prepared are we for the next disaster?",
-            "sub_line":    "Share this with your community.",
-            "engage_line": f"Follow {channel_name} for emergency updates.",
+            "main_line":   "Could this catastrophic event happen again?",
+            "sub_line":    "Sound off in the comments below.",
+            "engage_line": f"The next 24 to 48 hours are critical. Subscribe to {channel_name} for real-time unvarnished updates.",
         },
         "sports": {
-            "main_line":   "Who is your pick to win the next match?",
-            "sub_line":    "Drop your predictions in the comments below.",
-            "engage_line": f"Subscribe to {channel_name} for daily sports updates.",
+            "main_line":   "Was this the greatest moment in modern history?",
+            "sub_line":    "Drop your prediction in the comments.",
+            "engage_line": f"Subscribe to {channel_name} for daily insider highlights.",
         },
     }
     default = dict(DEFAULTS.get(context, {
-        "main_line":   "What do you think about this?",
-        "sub_line":    "Share your thoughts below.",
-        "engage_line": f"Follow {channel_name} for daily news updates.",
+        "main_line":   "Could this completely change what happens next?",
+        "sub_line":    "Sound off in the comments below.",
+        "engage_line": f"Subscribe to {channel_name} for breaking coverage.",
     }))
-    HARD_CLOSE = f"Share your point of view or thoughts in the comments below, and subscribe to {channel_name} for daily news videos."
+    if context in ("war", "tense", "disaster"):
+        HARD_CLOSE = f"The next 24 to 48 hours are critical. Subscribe to {channel_name} for real-time unvarnished updates."
+    elif context == "politics":
+        HARD_CLOSE = f"Which side do you stand on? Drop your view in the comments and subscribe to {channel_name} for daily factual breakdowns."
+    else:
+        HARD_CLOSE = f"Subscribe to {channel_name} for breaking updates as this story develops, and sound off in the comments below."
     default["hard_close"] = HARD_CLOSE
 
     if not headline:
         return default
+
+    # Pillar 3: Episodic Serialization Check (tracked_stories continuity)
+    try:
+        from news_fetcher import check_story_continuity
+        tracked_match = check_story_continuity(headline, channel_key=channel_name.lower())
+        if not tracked_match:
+            tracked_match = check_story_continuity(headline, channel_key="newscup")
+        if tracked_match:
+            next_ep = tracked_match.get("episode_count", 1) + 1
+            ep_text = f"Episode {next_ep}" if next_ep > 1 else "Episode 2"
+            print(f"[CTA] Active tracked story match detected (id={tracked_match.get('id')}). Generating episodic CTA for {ep_text}.")
+            return {
+                "main_line": "This story is developing rapidly.",
+                "sub_line": "Drop your prediction in the comments.",
+                "engage_line": f"Subscribe to {channel_name} to catch {ep_text} tonight.",
+                "hard_close": f"This story is developing rapidly. Subscribe to {channel_name} to catch {ep_text} tonight.",
+            }
+    except Exception as _tr_err:
+        print(f"[CTA] Tracked story check exception: {_tr_err}")
 
     # Extract key entities from headline to anchor the CTA
     import re as _cta_re
@@ -1358,7 +1392,7 @@ def generate_dynamic_cta(headline: str, context: str, channel_name: str = "newsc
         f"- BANNED TOPICS (do NOT mention): {ban_list}\n"
         "- Do NOT use the phrase 'Stay Updated', 'Stay Informed', or 'What do you think'.\n"
         "- The MAIN_LINE must name a specific element from THIS story.\n"
-        f"- The ENGAGE_LINE must invite the user to subscribe to {channel_name}.\n"
+        f"- The ENGAGE_LINE must be an urgent Sub-Magnet psychological CTA (e.g. 'Developing story. Subscribe to {channel_name} for Part 2', 'The next 24 hours are critical. Subscribe to {channel_name} now').\n"
         "- Never use pronouns like 'our team', 'we', 'us', or 'our channel'. Always use the channel name directly or say 'Subscribe'.\n"
         "- Keep every line under 12 words.\n\n"
         "Write exactly these three lines:\n"
@@ -1392,6 +1426,14 @@ def generate_dynamic_cta(headline: str, context: str, channel_name: str = "newsc
             val = line.split(":", 1)[1].strip().strip('"').strip("'")
             if 4 < len(val) < 80:
                 result["engage_line"] = val
+
+    # Pillar 3: Enforce psychological Sub-Magnet CTA rules across contexts
+    if context in ("war", "tense", "disaster"):
+        result["engage_line"] = f"The next 24 to 48 hours are critical. Subscribe to {channel_name} for real-time unvarnished updates."
+    elif context == "politics":
+        result["main_line"] = "Which side do you stand on?"
+        result["sub_line"] = "Drop your view in the comments."
+        result["engage_line"] = f"Subscribe to {channel_name} for daily factual breakdowns."
 
     # Always append the hard engagement closer to engage_line
     result["hard_close"] = HARD_CLOSE

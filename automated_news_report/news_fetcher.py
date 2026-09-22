@@ -171,7 +171,7 @@ def _fetch_feed_bytes(url: str, timeout: int = 12) -> bytes | None:
 
 
 def _parse_entry(entry) -> dict:
-    """Extract title, link, summary from a feedparser entry."""
+    """Extract title, link, summary, and publication timestamp from a feedparser entry."""
     title   = getattr(entry, "title",   "No title")
     link    = getattr(entry, "link",    "")
     summary = getattr(entry, "summary", "")
@@ -184,42 +184,207 @@ def _parse_entry(entry) -> dict:
     if not summary:
         summary = title
 
-    return {"title": title, "link": link, "summary": summary}
+    # Extract publication date as epoch timestamp
+    import calendar
+    import time
+    pub_timestamp = time.time()
+    parsed = getattr(entry, "published_parsed", getattr(entry, "updated_parsed", None))
+    if parsed:
+        try:
+            pub_timestamp = float(calendar.timegm(parsed))
+        except Exception:
+            pass
+
+    return {
+        "title": title,
+        "link": link,
+        "summary": summary,
+        "pub_timestamp": pub_timestamp
+    }
+
+
+def _get_timezone_boost(title: str) -> int:
+    """Calculate a soft score boost based on the running time timezone and keywords."""
+    import datetime
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    title_lower = (title or "").lower()
+    
+    # 1. Asia peak hours (05:30 UTC to 14:30 UTC / 11:00 AM to 8:00 PM IST)
+    if datetime.time(5, 30) <= now_utc.time() <= datetime.time(14, 30):
+        asia_keywords = {"india", "modi", "delhi", "mumbai", "bengaluru", "china", "pakistan", "asia"}
+        if any(w in title_lower for w in asia_keywords):
+            return 4  # Soft boost for Asian relevance
+            
+    # 2. Western peak hours (Daytime in the West / Outside Asia Peak)
+    else:
+        west_keywords = {"us", "usa", "uk", "london", "washington", "biden", "trump", "europe", "nato"}
+        if any(w in title_lower for w in west_keywords):
+            return 4  # Soft boost for Western relevance
+            
+    return 0
+
+
+_GOOGLE_TRENDS_CACHE = {"timestamp": 0.0, "keywords": []}
+
+
+def _fetch_google_trends_keywords() -> list[str]:
+    """
+    Pillar 4: Query Google Trends Daily RSS (geo=US and geo=IN).
+    Cached locally (1-hour TTL) for zero network overhead on repeated calls.
+    Returns a list of trending search keyword strings (lowercase).
+    """
+    global _GOOGLE_TRENDS_CACHE
+    import time
+    import pathlib
+    import json
+    import xml.etree.ElementTree as ET
+
+    now = time.time()
+    cache_ttl = 3600.0  # 1 hour
+
+    # 1. In-memory cache check
+    if _GOOGLE_TRENDS_CACHE["keywords"] and (now - _GOOGLE_TRENDS_CACHE["timestamp"] < cache_ttl):
+        return _GOOGLE_TRENDS_CACHE["keywords"]
+
+    # 2. Local disk cache check
+    cache_file = pathlib.Path(__file__).parent / "output" / "google_trends_cache.json"
+    if cache_file.exists():
+        try:
+            data = json.loads(cache_file.read_text(encoding="utf-8"))
+            if (now - data.get("timestamp", 0) < cache_ttl) and data.get("keywords"):
+                _GOOGLE_TRENDS_CACHE["timestamp"] = data["timestamp"]
+                _GOOGLE_TRENDS_CACHE["keywords"] = data["keywords"]
+                return _GOOGLE_TRENDS_CACHE["keywords"]
+        except Exception:
+            pass
+
+    trends_urls = [
+        "https://trends.google.com/trending/rss?geo=US",
+        "https://trends.google.com/trending/rss?geo=IN",
+    ]
+    extracted = []
+    for t_url in trends_urls:
+        try:
+            resp = requests.get(t_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+            if resp.status_code == 200:
+                root = ET.fromstring(resp.content)
+                for item in root.findall(".//item"):
+                    t_elem = item.find("title")
+                    if t_elem is not None and t_elem.text:
+                        kw = t_elem.text.strip().lower()
+                        if kw and kw not in extracted:
+                            extracted.append(kw)
+        except Exception:
+            pass
+
+    if extracted:
+        _GOOGLE_TRENDS_CACHE["timestamp"] = now
+        _GOOGLE_TRENDS_CACHE["keywords"] = extracted
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps({"timestamp": now, "keywords": extracted}, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return extracted
+
+    return _GOOGLE_TRENDS_CACHE.get("keywords", [])
+
+
+def score_viral_potential(title: str, category: str = "general") -> int:
+    """
+    Score a headline on a calibrated 0-100 Viral Predictor scale:
+      - Superpower Entities (up to 35 pts): US, Russia, China, Israel, Gaza, Ukraine, Iran, Trump, Putin, Modi, etc.
+      - Emotional Urgency & Crisis (up to 30 pts): Airstrike, nuclear, war, strike, emergency, collapse, killed, etc.
+      - Historical Category / Context Performance from video_analytics (up to 20 pts).
+      - Pillar 4: Real-Time Search Trend / Velocity Boost (up to 25 pts).
+    """
+    title_lower = (title or "").lower()
+    if not title_lower:
+        return 0
+
+    score = 0
+
+    # 1. Superpower Entities (up to 35 pts)
+    tier1_entities = {"trump": 18, "putin": 16, "biden": 14, "modi": 14, "xi jinping": 14, "netanyahu": 14, "zelensky": 14}
+    tier2_nations = {"russia": 14, "ukraine": 14, "israel": 15, "gaza": 16, "palestine": 16, "iran": 14, "china": 12, "taiwan": 12, "us": 10, "usa": 10, "america": 10, "india": 10}
+    
+    entity_pts = 0
+    for entity, pts in tier1_entities.items():
+        if entity in title_lower:
+            entity_pts += pts
+            break
+    import re as _v_re
+    for nation, pts in tier2_nations.items():
+        if _v_re.search(rf"\b{nation}\b", title_lower):
+            entity_pts += pts
+            if entity_pts >= 35:
+                break
+    score += min(entity_pts, 35)
+
+    # 2. Emotional Urgency & High-Stakes Disruption (up to 30 pts)
+    urgency_tokens = {
+        "airstrike": 18, "air strike": 18, "missile": 16, "nuclear": 18, "bombs": 15, "bombing": 15,
+        "invasion": 16, "war": 14, "strikes": 14, "strike": 12, "attack": 12, "troops": 10, "clash": 10,
+        "killed": 12, "deadly": 12, "dead": 10, "massacre": 15, "assassination": 16, "hostage": 12,
+        "collapse": 12, "emergency": 12, "catastrophe": 14, "disaster": 10, "earthquake": 12,
+        "sanctions": 10, "crisis": 10, "coup": 14, "warns": 8, "threatens": 10, "ultimatum": 12,
+        "breaking": 10, "urgent": 10, "alert": 10, "live": 8, "tanks": 12, "tank": 12,
+        "military": 10, "ceasefire": 12, "standoff": 12, "escalate": 12, "escalates": 12,
+        "offensive": 14, "drone": 12, "drones": 12, "frontline": 12, "conflict": 12,
+        "turning point": 10, "critical": 8, "deploy": 8, "deployed": 10
+    }
+    urgency_pts = 0
+    for token, pts in urgency_tokens.items():
+        if token in title_lower:
+            urgency_pts += pts
+            if urgency_pts >= 30:
+                break
+    score += min(urgency_pts, 30)
+
+    # 3. Historical Category & Context Win Rates (up to 20 pts)
+    # Analytics data shows 'tense', 'war', and 'politics' produce 430-820 views
+    cat_lower = (category or "general").lower()
+    if any(w in title_lower for w in ["war", "strike", "attack", "conflict", "killed", "missile", "drone", "gaza", "military", "tanks", "ceasefire", "standoff", "escalat"]):
+        score += 20  # Matches 'tense' / 'war' top-performing context
+    elif any(w in title_lower for w in ["trump", "modi", "election", "brics", "summit", "sanctions"]):
+        score += 16  # Matches 'politics'
+    elif cat_lower in ["world", "general"]:
+        score += 12
+    else:
+        score += 8
+
+    # 4. Search Trend & Timezone Velocity Boost (Pillar 4: +15 to +25 pts)
+    trend_boost = 0
+    try:
+        trending_kws = _fetch_google_trends_keywords()
+        if trending_kws:
+            for kw in trending_kws:
+                if not kw or len(kw) < 3:
+                    continue
+                # Exact phrase match
+                if kw in title_lower:
+                    trend_boost = 25
+                    break
+                # Significant keyword token overlap
+                kw_tokens = [w for w in kw.split() if len(w) >= 4]
+                if len(kw_tokens) >= 2 and all(w in title_lower for w in kw_tokens):
+                    trend_boost = 22
+                    break
+                elif len(kw_tokens) == 1 and kw_tokens[0] in title_lower:
+                    trend_boost = 18
+                    break
+    except Exception:
+        trend_boost = 0
+
+    tz_boost = min(15, _get_timezone_boost(title) * 2)
+    score += max(trend_boost, tz_boost)
+
+    return min(score, 100)
 
 
 def _score_headline(title: str) -> int:
-    """
-    Score a headline by counting high-impact keyword matches.
-    Higher score = more likely to produce engaging short-form content.
-    Returns integer score 0-100.
-    """
-    HIGH_IMPACT_TOKENS = {
-        # Conflict / Crisis - weight 3
-        "war": 3, "strike": 3, "attack": 3, "clash": 3, "invasion": 3,
-        "explosion": 3, "airstrike": 3, "troops": 3, "ceasefire": 3,
-        "missile": 3, "nuclear": 3, "hostage": 3, "siege": 3,
-        # Death / Disaster - weight 3
-        "dead": 3, "killed": 3, "deadly": 3, "death": 3, "disaster": 3,
-        "earthquake": 3, "flood": 3, "crash": 3, "collapse": 3,
-        # Politics / Power - weight 2
-        "warns": 2, "threatens": 2, "sanctions": 2, "ban": 2,
-        "resign": 2, "arrest": 2, "crisis": 2, "shutdown": 2,
-        "impeach": 2, "election": 2, "coup": 2,
-        # Economy / Scandal - weight 2
-        "scam": 2, "fraud": 2, "billion": 2, "record": 2, "crash": 2,
-        "inflation": 2, "bankrupt": 2, "scandal": 2,
-        # India/Global priority - weight 2
-        "india": 2, "modi": 2, "pakistan": 2, "china": 2, "iran": 2,
-        "russia": 2, "ukraine": 2, "israel": 2, "gaza": 2,
-        # Soft positive - weight 1
-        "historic": 1, "landmark": 1, "breakthrough": 1, "first": 1,
-    }
-    title_lower = (title or "").lower()
-    score = 0
-    for token, weight in HIGH_IMPACT_TOKENS.items():
-        if token in title_lower:
-            score += weight
-    return min(score, 100)
+    """Backward-compatible alias for viral prediction scoring."""
+    return score_viral_potential(title, "general")
 
 
 def _fetch_og_image_url(article_url: str) -> str:
@@ -588,6 +753,73 @@ def _cross_verify_article(article: dict, max_sources: int = 3) -> dict:
     return article
 
 
+def get_dynamic_lookback_hours(channel: str | None, category: str | None = None) -> float:
+    """Calculate elapsed hours since the last successful run ended, plus a 1-hour buffer."""
+    import sqlite3
+    import time
+    from pathlib import Path
+    
+    db_path = Path(__file__).resolve().parent / "db.sqlite"
+    if not db_path.exists():
+        return 18.0  # default fallback if DB does not exist
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Check if runs table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='runs'")
+        if not cursor.fetchone():
+            conn.close()
+            return 18.0
+
+        row = None
+        if channel:
+            if category:
+                cursor.execute("""
+                    SELECT finished_at FROM runs 
+                    WHERE channel_key=? AND category=? AND status='success' AND stage='complete'
+                    ORDER BY finished_at DESC LIMIT 1
+                """, (channel, category))
+                row = cursor.fetchone()
+            if not row or not row["finished_at"]:
+                cursor.execute("""
+                    SELECT finished_at FROM runs 
+                    WHERE channel_key=? AND status='success' AND stage='complete'
+                    ORDER BY finished_at DESC LIMIT 1
+                """, (channel,))
+                row = cursor.fetchone()
+        else:
+            if category:
+                cursor.execute("""
+                    SELECT finished_at FROM runs 
+                    WHERE category=? AND status='success' AND stage='complete'
+                    ORDER BY finished_at DESC LIMIT 1
+                """, (category,))
+                row = cursor.fetchone()
+            if not row or not row["finished_at"]:
+                cursor.execute("""
+                    SELECT finished_at FROM runs 
+                    WHERE status='success' AND stage='complete'
+                    ORDER BY finished_at DESC LIMIT 1
+                """)
+                row = cursor.fetchone()
+        conn.close()
+        
+        if row and row["finished_at"]:
+            last_finished = row["finished_at"]
+            now_epoch = time.time()
+            elapsed_seconds = now_epoch - last_finished
+            elapsed_hours = elapsed_seconds / 3600.0
+            # Return elapsed hours plus 1 hour safety buffer, capped at 24 hours
+            return min(max(4.0, elapsed_hours + 1.0), 24.0)
+    except Exception as e:
+        print(f"[NewsFetcher] Failed to query dynamic lookback hours: {e}")
+        
+    return 18.0  # default fallback
+
+
 def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general", channel: str = None) -> dict:
     """
     Scrape all feeds in the selected category pool simultaneously, score every
@@ -600,6 +832,11 @@ def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general"
         channel: optional channel key to fetch feeds dynamically from the database
     """
     import concurrent.futures
+    import time
+
+    lookback_hours = get_dynamic_lookback_hours(channel, category)
+    print(f"[NewsFetcher] Dynamic lookback window set to: {lookback_hours:.1f} hours")
+    lookback_seconds = lookback_hours * 3600.0
 
     def _fetch_single(url):
         raw = _fetch_feed_bytes(url, timeout=10)
@@ -610,14 +847,13 @@ def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general"
         except Exception:
             return []
         results = []
-        for entry in d.entries[:3]:   # top 3 per feed
+        for entry in d.entries[:15]:   # top 15 per feed
             article = _parse_entry(entry)
-            article["_score"] = _score_headline(article["title"])
             article["_feed"]  = url
             results.append(article)
         return results
 
-    all_articles = []
+    all_raw_articles = []
     
     # Query channel-specific feeds from the database if channel is provided
     feeds = []
@@ -645,22 +881,79 @@ def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general"
     print(f"[NewsFetcher] Category: '{category}' -- scoring from {len(feeds)} feeds...")
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
         futures = {ex.submit(_fetch_single, url): url for url in feeds}
-        for future in concurrent.futures.as_completed(futures, timeout=15):
+        done, _ = concurrent.futures.wait(futures.keys(), timeout=12, return_when=concurrent.futures.ALL_COMPLETED)
+        for future in done:
             try:
-                all_articles.extend(future.result())
+                all_raw_articles.extend(future.result())
             except Exception:
                 pass
 
-    if not all_articles:
+    if not all_raw_articles:
         raise RuntimeError(
             "[NewsFetcher] All feeds failed. Check internet connection."
         )
 
-    # Sort by score descending, then pick the best unused headline.
+    # Progressive age filtering fallback
+    now = time.time()
+    all_articles = []
+
+    # Step 1: Dynamic lookback window
+    print(f"[NewsFetcher] Filtering articles with dynamic lookback of {lookback_hours:.1f} hours...")
+    for art in all_raw_articles:
+        age_seconds = now - art["pub_timestamp"]
+        if age_seconds <= lookback_seconds:
+            art["_score"] = score_viral_potential(art["title"], category)
+            all_articles.append(art)
+
+    # Step 2: Fallback to 48.0 hours
+    if not all_articles:
+        print(f"[NewsFetcher] No articles found within {lookback_hours:.1f} hours. Relaxing lookback to 48.0 hours...")
+        for art in all_raw_articles:
+            age_seconds = now - art["pub_timestamp"]
+            if age_seconds <= 48.0 * 3600.0:
+                art["_score"] = score_viral_potential(art["title"], category)
+                all_articles.append(art)
+
+    # Step 3: Fallback to 168.0 hours (7 days)
+    if not all_articles:
+        print(f"[NewsFetcher] No articles found within 48.0 hours. Relaxing lookback to 168.0 hours (7 days)...")
+        for art in all_raw_articles:
+            age_seconds = now - art["pub_timestamp"]
+            if age_seconds <= 168.0 * 3600.0:
+                art["_score"] = score_viral_potential(art["title"], category)
+                all_articles.append(art)
+
+    # Step 4: Fallback to all parsed articles
+    if not all_articles:
+        print(f"[NewsFetcher] No articles found within 7 days. Using all available parsed articles regardless of age...")
+        for art in all_raw_articles:
+            art["_score"] = score_viral_potential(art["title"], category)
+            all_articles.append(art)
+
+    # Sort by score descending
     all_articles.sort(key=lambda a: a["_score"], reverse=True)
     best = all_articles[0]
 
-    print(f"[NewsFetcher] {len(all_articles)} headlines scored across all feeds")
+    # Dynamic Milestone Pace Gatekeeper (Pillar 1)
+    try:
+        from db_manager import get_milestone_pace_status
+        _pace_info = get_milestone_pace_status()
+        _viral_gate_threshold = _pace_info.get("adaptive_viral_threshold", 70)
+        print(f"[ViralPredictor] Milestone status: '{_pace_info.get('pace_status')}' | Gatekeeper Threshold: {_viral_gate_threshold}/100")
+    except Exception:
+        _viral_gate_threshold = 70
+
+    print(f"[NewsFetcher] {len(all_articles)} headlines scored across all feeds (Top score: {best['_score']}/100)")
+
+    # Pillar 1 Gatekeeper: Filter candidates meeting threshold
+    gatekeeper_candidates = [a for a in all_articles if a.get("_score", 0) >= _viral_gate_threshold]
+    if gatekeeper_candidates:
+        print(f"[ViralGatekeeper] {len(gatekeeper_candidates)} of {len(all_articles)} candidates passed threshold (>= {_viral_gate_threshold}/100).")
+        candidates_to_eval = gatekeeper_candidates
+    else:
+        print(f"[ViralGatekeeper] All {len(all_articles)} candidates scored below threshold ({_viral_gate_threshold}). "
+              f"Safely falling back to highest available candidate (top score={best.get('_score', 0)}/100) to ensure production never halts.")
+        candidates_to_eval = all_articles
 
     # Topic memory: skip recently used headlines.
     # Stores the last 10 winning headlines to prevent repeat videos.
@@ -700,7 +993,8 @@ def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general"
     # PHASE 22: Also store keysets of recently used headlines for overlap check
     _used_keysets = [_title_keyset(fp) for fp in _used_topics if len(fp) >= 10]
 
-    for _candidate in all_articles:
+    selected_candidate = None
+    for _candidate in candidates_to_eval:
         _fp = _title_fingerprint(_candidate["title"])
         if _fp in _used_fps:
             continue
@@ -714,14 +1008,16 @@ def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general"
             print(f"[DEDUP] Skipping '{_candidate['title'][:60]}' "
                   f"-- {_overlap_count} keyword overlap with recent headline")
             continue
+        selected_candidate = _candidate
         best = _candidate
         print(f"[NewsFetcher] Selected (score={best.get('_score', '?')}): {best['title']}")
         break
-    else:
-        print("[NewsFetcher] All recent headlines used - resetting topic memory")
+
+    if not selected_candidate:
+        print("[NewsFetcher] All candidate headlines used or deduped - falling back to highest available candidate")
         _used_topics = []
         _used_fps = set()
-        best = all_articles[0]
+        best = candidates_to_eval[0] if candidates_to_eval else all_articles[0]
         print(f"[NewsFetcher] Selected (score={best.get('_score', '?')}): {best['title']}")
 
     print(f"[NewsFetcher] Source feed: {best['_feed']}")
@@ -790,6 +1086,57 @@ def fetch_latest_article(feed_url: str = RSS_FEED_URL, category: str = "general"
 
     best = _cross_verify_article(best, max_sources=3)
     return best
+
+
+def check_story_continuity(headline: str, channel_key: str) -> dict | None:
+    """
+    Check if the new headline matches an active tracked story for this channel.
+    Matches if there is at least a 3-keyword overlap (case-insensitive).
+    Returns the story row as a dict if matched, otherwise None.
+    """
+    import sqlite3
+    import re
+    from pathlib import Path
+    
+    db_path = Path(__file__).resolve().parent / "db.sqlite"
+    if not db_path.exists():
+        return None
+
+    def _extract_keywords(text: str) -> set:
+        _STOPS = {
+            "the", "a", "an", "and", "or", "but", "in", "on", "at",
+            "to", "for", "of", "with", "from", "by", "as", "is", "are",
+            "was", "were", "be", "been", "has", "have", "had", "will",
+            "says", "said", "over", "after", "amid", "new", "reports", "on", "developments"
+        }
+        words = re.findall(r"[a-zA-Z]{4,}", text.lower())
+        return {w for w in words if w not in _STOPS}
+
+    new_keys = _extract_keywords(headline)
+    if not new_keys:
+        return None
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, story_key, headline, episode_count FROM tracked_stories WHERE channel_key=? AND status='active'",
+            (channel_key,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        for row in rows:
+            tracked_headline = row["headline"]
+            tracked_keys = _extract_keywords(tracked_headline)
+            overlap = new_keys & tracked_keys
+            if len(overlap) >= 3:
+                return dict(row)
+    except Exception as e:
+        print(f"[NewsFetcher] Error in check_story_continuity: {e}")
+
+    return None
 
 
 # ── Smoke test ────────────────────────────────────────────────────────────────

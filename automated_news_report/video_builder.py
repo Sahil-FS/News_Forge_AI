@@ -1246,20 +1246,26 @@ def _build_outro_scene(
 
     W, H = VIDEO_WIDTH, VIDEO_HEIGHT
 
-    # â”€â”€ Dynamic Duration Control â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Read duration from the OUTRO audio file itself -- not from the
-    # total video audio_duration parameter which is the full video length.
+    # ── Dynamic Duration Control ──────────────────────────────────────────
+    # Enforce strict 1.0s - 1.5s maximum outro duration to prevent viewer drop-off
     OUTRO_MIN = OUTRO_MIN_DURATION
     OUTRO_MAX = OUTRO_MAX_DURATION
     if audio_path and os.path.isfile(audio_path):
         _outro_audio     = AudioFileClip(audio_path)
         _outro_narr_dur  = _outro_audio.duration   # this WAV file only
-        duration = max(OUTRO_MIN, min(OUTRO_MAX, _outro_narr_dur + 0.8))
+        duration = max(OUTRO_MIN, min(OUTRO_MAX, _outro_narr_dur + 0.1))
+        # Ensure narration does not exceed clip duration
+        if _outro_narr_dur > duration:
+            if hasattr(_outro_audio, "subclipped"):
+                _outro_audio = _outro_audio.subclipped(0, duration)
+            elif hasattr(_outro_audio, "subclip"):
+                _outro_audio = _outro_audio.subclip(0, duration)
         print(f"[OUTRO] Duration: {_outro_narr_dur:.2f}s narration -> {duration:.2f}s clip")
     else:
         _outro_audio    = None
         _outro_narr_dur = 0.0
-        duration        = 4.0
+        duration        = OUTRO_MAX
+        print(f"[OUTRO] Duration: {duration:.2f}s clip (no narration)")
  
     def _make_outro_bg() -> np.ndarray:
         """
@@ -1502,9 +1508,9 @@ def _build_outro_scene(
     text_clip = ImageClip(text_arr).with_duration(duration)
     banner_clip = ImageClip(outro_banner_arr).with_duration(duration)
  
-    # Animated subscribe button - fades in from t=1.5s over 0.8s
-    FADE_START = 1.5
-    FADE_DUR   = 0.8
+    # Animated subscribe button - fades in immediately from t=0.0s over 0.25s
+    FADE_START = 0.0
+    FADE_DUR   = 0.25
 
     def make_subscribe_frame(t):
         # Returns 3-channel RGB array
@@ -1715,12 +1721,16 @@ def _build_map_stinger(
                   f"— hook sentence was too long, capping to 7.0s")
             _actual_audio_dur = min(_actual_audio_dur, 7.0)
             # Subclip the audio to avoid narrating past the cap
-            _map_audio = _map_audio.subclipped(0, min(7.0, _map_audio.duration))
+            if hasattr(_map_audio, "subclipped"):
+                _map_audio = _map_audio.subclipped(0, min(7.0, _map_audio.duration))
+            elif hasattr(_map_audio, "subclip"):
+                _map_audio = _map_audio.subclip(0, min(7.0, _map_audio.duration))
         
-        duration = max(MAP_MIN_DURATION, min(7.0, _actual_audio_dur + 0.5))
+        # High-retention fast cut: clip finishes right as hook ends (0.10s pad instead of 0.5s dead silence)
+        duration = max(2.0, min(MAP_MAX_DURATION, _actual_audio_dur + 0.10))
         print(f"[MAP STINGER] Audio={_actual_audio_dur:.2f}s -> clip={duration:.2f}s")
     else:
-        duration = MAP_MIN_DURATION
+        duration = min(2.5, MAP_MIN_DURATION)
  
     bg_arr = _make_background(map_image_path, W, H)
 
@@ -1816,12 +1826,12 @@ def _build_map_stinger(
  
     text_clip   = ImageClip(_make_map_text()).with_duration(duration)
     banner_clip = ImageClip(_make_breaking_news_banner(W, H)).with_duration(duration)
-    _pure_map_narr_dur = _actual_audio_dur if _actual_audio_dur > 0 else max(1.0, duration - 0.5)
+    _pure_map_narr_dur = _actual_audio_dur if _actual_audio_dur > 0 else max(1.0, duration - 0.10)
 
     # Progressive caption for hook narration (same system as all other scenes)
     map_caption_clip = None
     if hook_text and hook_text.strip():
-        _hook_timing = max(1.0, _pure_map_narr_dur - 0.12)  # subtract 120ms lead silence
+        _hook_timing = max(1.0, _pure_map_narr_dur)
         _caption_clip_dur = duration
 
         map_caption_clip = _make_progressive_caption(
@@ -2006,7 +2016,17 @@ def build_video(scenes: list[dict], pipeline_meta: dict = None, visual_cut_thres
     clips = []
  
     # -- Location map stinger -----------------------------------------
+    # Map stinger is eliminated for short-format videos (fmt == 'short' or pipeline_meta show_map is False)
+    # Videos start immediately at 0.0s on Scene 0 with full-bleed action visual and headline overlay.
+    has_map_stinger = False
+    _is_short = True
     if pipeline_meta:
+        if pipeline_meta.get("fmt") == "long" or pipeline_meta.get("format") == "long":
+            _is_short = False
+        if not pipeline_meta.get("show_map", False):
+            _is_short = True
+
+    if not _is_short and pipeline_meta:
         map_path = pipeline_meta.get("map_image_path")
         location = pipeline_meta.get("primary_location", "")
         headline = pipeline_meta.get("headline", "")
@@ -2021,11 +2041,14 @@ def build_video(scenes: list[dict], pipeline_meta: dict = None, visual_cut_thres
                     audio_path=pipeline_meta.get("map_audio_path"),
                 )
                 clips.append(stinger)
+                has_map_stinger = True
                 print("[MAP STINGER] Prepended to video")
             except Exception as exc:
                 print(f"[MAP STINGER] Failed: {exc} - skipping")
         else:
             print("[MAP STINGER] No map available - skipping")
+    else:
+        print("[MAP STINGER] Bypassed for short-format video (starts immediately at 0.0s on Scene 0)")
  
     for idx, scene in enumerate(scenes):
         clip = _build_scene_clip(
@@ -2133,12 +2156,9 @@ def build_video(scenes: list[dict], pipeline_meta: dict = None, visual_cut_thres
     duck_intervals = []
     
     clip_idx = 0
-    if pipeline_meta:
-        map_path = pipeline_meta.get("map_image_path")
-        location = pipeline_meta.get("primary_location", "")
-        if map_path and os.path.isfile(map_path) and location:
-            current_time += clips[clip_idx].duration
-            clip_idx += 1
+    if has_map_stinger:
+        current_time += clips[clip_idx].duration
+        clip_idx += 1
             
     for idx, scene in enumerate(scenes):
         scene_clip = clips[clip_idx]

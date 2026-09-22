@@ -2,7 +2,11 @@
 
 import sys
 import re
-import spacy  # type: ignore
+try:
+    import spacy  # type: ignore
+except Exception:
+    spacy = None
+from nlp_loader import get_nlp
 from utils import clean_caption_text
 
 # Environment lock
@@ -342,12 +346,7 @@ def extract_context_entities(script: str) -> dict:
         "country_context": country_context,
     }
 
-try:
-    nlp = spacy.load("en_core_web_sm")
-except OSError:
-    raise OSError(
-        "[ScenePlanner] spaCy model not found. Run: python -m spacy download en_core_web_sm"
-    )
+nlp = get_nlp()
 
 def _detect_scene_type(sentence: str) -> str:
     import re

@@ -51,6 +51,10 @@ def _apply_monkeypatches():
                     with_name = attr.replace("set_", "with_", 1)
                     if not hasattr(cls, with_name):
                         setattr(cls, with_name, getattr(cls, attr))
+            if hasattr(cls, "subclip") and not hasattr(cls, "subclipped"):
+                setattr(cls, "subclipped", getattr(cls, "subclip"))
+            elif hasattr(cls, "subclipped") and not hasattr(cls, "subclip"):
+                setattr(cls, "subclip", getattr(cls, "subclipped"))
 
         if not hasattr(Clip, "with_effects"):
             def with_effects(self, effects):

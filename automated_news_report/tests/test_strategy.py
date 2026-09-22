@@ -106,5 +106,45 @@ class TestComplianceStrategy(unittest.TestCase):
             self.assertNotIn("THE NEWS", s["text"])
             self.assertNotIn("THE VERDICT", s["text"])
 
+    def test_dynamic_lookback(self):
+        import time
+        from news_fetcher import get_dynamic_lookback_hours
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM runs WHERE channel_key='test_channel_lookback'")
+        
+        now = time.time()
+        
+        # Test 1: 18 hours ago
+        finished_18_h_ago = now - (18 * 3600)
+        cursor.execute(
+            "INSERT INTO runs (id, channel_key, category, format, stage, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("run_lb_1", "test_channel_lookback", "general", "short", "complete", "success", finished_18_h_ago - 3600, finished_18_h_ago)
+        )
+        conn.commit()
+        
+        lb_1 = get_dynamic_lookback_hours("test_channel_lookback")
+        # 18 hours + 1 hour buffer = 19.0
+        self.assertAlmostEqual(lb_1, 19.0, places=1)
+        
+        # Test 2: 5 hours ago
+        cursor.execute("DELETE FROM runs WHERE channel_key='test_channel_lookback'")
+        finished_5_h_ago = now - (5 * 3600)
+        cursor.execute(
+            "INSERT INTO runs (id, channel_key, category, format, stage, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("run_lb_2", "test_channel_lookback", "general", "short", "complete", "success", finished_5_h_ago - 3600, finished_5_h_ago)
+        )
+        conn.commit()
+        
+        lb_2 = get_dynamic_lookback_hours("test_channel_lookback")
+        # 5 hours + 1 hour buffer = 6.0
+        self.assertAlmostEqual(lb_2, 6.0, places=1)
+        
+        # Cleanup
+        cursor.execute("DELETE FROM runs WHERE channel_key='test_channel_lookback'")
+        conn.commit()
+        conn.close()
+
 if __name__ == "__main__":
     unittest.main()

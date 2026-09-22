@@ -14,7 +14,28 @@ Usage:
 import argparse
 import sqlite3
 import time
+import sys
 from pathlib import Path
+
+# Force UTF-8 stdout on Windows
+if sys.platform == "win32":
+    try:
+        import io
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer,
+            encoding="utf-8",
+            errors="replace",
+            line_buffering=True
+        )
+        sys.stderr = io.TextIOWrapper(
+            sys.stderr.buffer,
+            encoding="utf-8",
+            errors="replace",
+            line_buffering=True
+        )
+    except Exception:
+        pass
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH  = BASE_DIR / "db.sqlite"
@@ -29,6 +50,10 @@ def get_conn():
 def sync_all(channel_key: str | None = None, run_id: str | None = None):
     """Sync analytics for all uploaded videos (or filter by channel / run)."""
     from analytics_puller import AnalyticsPuller
+    from db_manager import promote_scheduled_uploads
+
+    # Auto-promote scheduled uploads that are already published
+    promote_scheduled_uploads()
 
     conn = get_conn()
     cursor = conn.cursor()
@@ -52,6 +77,14 @@ def sync_all(channel_key: str | None = None, run_id: str | None = None):
 
     if not rows:
         print("[Sync] No uploaded videos found to sync.")
+        try:
+            from correlation_engine import CorrelationEngine
+            channels_to_audit = {channel_key} if channel_key else {"newscup", "newscup_india"}
+            for ch in channels_to_audit:
+                CorrelationEngine.detect_and_flag_outliers(ch)
+                CorrelationEngine.generate_learning_diagnostics(ch)
+        except Exception as diag_err:
+            print(f"[POST-SYNC DIAGNOSTICS ERROR] Failed to display learning diagnostics: {diag_err}")
         return
 
     print(f"[Sync] Found {len(rows)} video(s) to sync analytics for.")
@@ -77,6 +110,16 @@ def sync_all(channel_key: str | None = None, run_id: str | None = None):
             print(f"[Sync] ERROR for run {r_id}: {e}")
         print()
         time.sleep(1)  # polite API rate limiting
+
+    # Post-sync self-learning diagnostics & outlier detection
+    try:
+        from correlation_engine import CorrelationEngine
+        channels_to_audit = set(row["channel_key"] for row in rows) if not channel_key else {channel_key}
+        for ch in channels_to_audit:
+            CorrelationEngine.detect_and_flag_outliers(ch)
+            CorrelationEngine.generate_learning_diagnostics(ch)
+    except Exception as diag_err:
+        print(f"[POST-SYNC DIAGNOSTICS ERROR] Failed to display learning diagnostics: {diag_err}")
 
 
 def show_status():

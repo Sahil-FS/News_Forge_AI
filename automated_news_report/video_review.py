@@ -55,6 +55,17 @@ import textwrap
 import subprocess
 from datetime import datetime
 
+# feedback loop integration
+try:
+    from correlation_engine import CorrelationEngine
+except ImportError:
+    CorrelationEngine = None
+
+try:
+    import requests
+except ImportError:
+    requests = None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -217,6 +228,8 @@ class ParsedRun:
     images_ok:     int  = 0
     images_fail:   int  = 0
     pipeline_ok:   bool = False
+    channel_key:   str = "newscup"
+    format_mode:   str = "short"
 
     def __init__(self):
         self.scenes = []
@@ -271,12 +284,27 @@ def parse_stdout(lines: list, exit_code: int) -> ParsedRun:
                     "text":      _s.get("text", ""),
                     "audio_dur": 0.0,
                     "has_image": bool(_s.get("image_path")),
+                    "has_alt_image": bool(_s.get("alt_image_path")),
                 })
             print(f"[REVIEW] Loaded {len(run.scenes)} scenes from scenes.json")
         except Exception as _je:
             print(f"[REVIEW] scenes.json load failed: {_je}")
     else:
         print("[REVIEW] scenes.json not found -- scene metrics will be limited")
+
+    meta_json_path = os.path.join(ROOT, "output", "pipeline_meta.json")
+    if os.path.isfile(meta_json_path):
+        try:
+            import json as _json
+            with open(meta_json_path, "r", encoding="utf-8") as _mf:
+                _meta = _json.load(_mf)
+            run.channel_key = _meta.get("channel_key", "newscup")
+            run.format_mode = _meta.get("format", "short")
+            if _meta.get("story_context"):
+                run.context = _meta.get("story_context")
+            print(f"[REVIEW] Loaded channel_key='{run.channel_key}' and format='{run.format_mode}' from pipeline_meta.json")
+        except Exception as _me:
+            print(f"[REVIEW] pipeline_meta.json load failed: {_me}")
 
     # Audio: "[VoiceGen] Audio saved -> .../scene_XX_HASH.wav" or Cache hit
     audio_saved = {}
@@ -460,22 +488,107 @@ STRONG_SIGNALS = [
     "tensions", "conflict", "major", "emergency", "landmark", "victory",
 ]
 
-def score_hook(text: str) -> tuple:
+def evaluate_hook_with_llama3(hook_text: str, channel_key: str) -> dict | None:
+    if requests is None or CorrelationEngine is None:
+        return None
+
+    try:
+        past_hooks = CorrelationEngine.get_hook_retention_traits(channel_key, limit=3)
+    except Exception as e:
+        print(f"[REVIEW] Hook scorer failed to fetch database hooks: {e}")
+        past_hooks = []
+
+    examples_str = ""
+    if past_hooks:
+        examples_str = "\nHere are examples of past HIGH-RETENTION hooks from this channel that succeeded:\n"
+        for idx, h in enumerate(past_hooks):
+            examples_str += f"- Hook: \"{h['hook_text']}\" (Retention Ratio: {h['hook_retention_ratio']*100:.1f}%)\n"
+
+    prompt = f"""You are an expert short-form video optimization AI. Evaluate the following candidate video hook for the first 3-5 seconds of a news reel:
+Candidate Hook: "{hook_text}"
+{examples_str}
+Evaluate the candidate hook on three criteria (each out of 10):
+1. Curiosity Gap: Does it raise an immediate, compelling question or show a shocking detail that makes viewers want to keep watching?
+2. Emotional Arousal: Does it use strong, active verbs and emotional/high-stimulus keywords?
+3. Clarity / Information Delivery: Is it clean, concise, and easy to grasp in 3-5 seconds without generic cliches?
+
+Provide your response in JSON format (and ONLY JSON, no markdown formatting outside the JSON, no extra text) with these keys:
+{{
+  "curiosity_gap_score": <float>,
+  "emotional_arousal_score": <float>,
+  "clarity_score": <float>,
+  "explanation": "<string explaining the rating>",
+  "suggestions": "<string with actionable recommendations to improve the hook>"
+}}
+"""
+    payload = {
+        "model": "llama3",
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": 0.3,
+            "top_p": 0.9,
+            "num_predict": 400
+        }
+    }
+    
+    try:
+        url = "http://localhost:11434/api/generate"
+        response = requests.post(url, json=payload, timeout=12)
+        if response.status_code == 200:
+            resp_data = response.json()
+            raw_text = resp_data.get("response", "").strip()
+            
+            # Find outer json bounds
+            start = raw_text.find("{")
+            end = raw_text.rfind("}")
+            if start != -1 and end != -1:
+                json_str = raw_text[start:end+1]
+                import json
+                data = json.loads(json_str)
+                cg = float(data.get("curiosity_gap_score", 7.0))
+                ea = float(data.get("emotional_arousal_score", 7.0))
+                cl = float(data.get("clarity_score", 7.0))
+                overall = round((cg + ea + cl) / 3.0, 1)
+                
+                return {
+                    "overall_score": overall,
+                    "explanation": data.get("explanation", ""),
+                    "suggestions": data.get("suggestions", "")
+                }
+    except Exception as e:
+        print(f"[REVIEW] Llama 3 hook evaluation request failed or timed out: {e}")
+        
+    return None
+
+def score_hook(text: str, channel_key: str = "newscup") -> tuple:
     score, issues = 7.0, []
-    tl = text.lower()
-    for ph in WEAK_OPENERS:
-        if ph in tl:
-            score -= 2.5
-            issues.append(f'Weak hook opener: "{ph}"')
-            break
-    strong = [w for w in STRONG_SIGNALS if w in tl]
-    score += min(len(strong), 3) * 0.5
-    if _wc(text) < 8:
-        score -= 1.5
-        issues.append("Hook < 8 words -- low engagement.")
-    if _wc(text) > 30:
-        score -= 1.0
-        issues.append("Hook > 30 words -- too long.")
+    
+    llama_result = evaluate_hook_with_llama3(text, channel_key)
+    if llama_result and "overall_score" in llama_result:
+        score = llama_result["overall_score"]
+        explanation = llama_result.get("explanation", "")
+        suggestions = llama_result.get("suggestions", "")
+        if explanation:
+            issues.append(f"Llama 3 Scorer: {explanation}")
+        if suggestions:
+            issues.append(f"Llama 3 Suggestion: {suggestions}")
+    else:
+        tl = text.lower()
+        for ph in WEAK_OPENERS:
+            if ph in tl:
+                score -= 2.5
+                issues.append(f'Weak hook opener: "{ph}"')
+                break
+        strong = [w for w in STRONG_SIGNALS if w in tl]
+        score += min(len(strong), 3) * 0.5
+        if _wc(text) < 8:
+            score -= 1.5
+            issues.append("Hook < 8 words -- low engagement.")
+        if _wc(text) > 30:
+            score -= 1.0
+            issues.append("Hook > 30 words -- too long.")
+            
     return _clamp(score), issues
 
 TONE_MAP = {
@@ -538,7 +651,7 @@ def score_flow(scene_count: int, script: str) -> tuple:
 def score_script(run: ParsedRun) -> tuple:
     n = len(run.scenes)
     hook_text = run.scenes[0]["text"] if run.scenes else run.script
-    h_s, h_i  = score_hook(hook_text)
+    h_s, h_i  = score_hook(hook_text, run.channel_key)
     t_s, t_i  = score_tone(run.context, run.script)
     r_s, r_i  = score_repetition(run.script)
     f_s, f_i  = score_flow(n, run.script)
@@ -611,44 +724,69 @@ def score_timing(run: ParsedRun) -> tuple:
 
 # ── Image relevance ───────────────────────────────────────────────────────────
 
-def score_images(run: ParsedRun) -> tuple:
+def score_images(run: ParsedRun, pacing_params: dict = None) -> tuple:
     score, issues = 10.0, []
     fail = run.images_fail
     if fail > 0:
         score -= fail * 1.5
         issues.append(f"{fail} scene(s) missing images -- fallback background used.")
-    # Check for very long single-image scenes
+        
+    v_cut = 7.0
+    if pacing_params:
+        v_cut = pacing_params.get("visual_cut_threshold", 2.8)
+        
     for i, s in enumerate(run.scenes):
-        if s["audio_dur"] > 7.0 and s.get("has_image"):  # matches visual-flow scorer threshold
-            score -= 0.5
-            issues.append(f"Scene {i+1}: {s['audio_dur']:.1f}s on single image -- static.")
+        dur = s["audio_dur"]
+        if dur > v_cut:
+            if s.get("has_image") and not s.get("has_alt_image"):
+                score -= 0.8
+                issues.append(f"Scene {i+1}: {dur:.1f}s exceeds visual cut threshold ({v_cut:.1f}s) but lacks a B-roll cut -- static image fatigue risk.")
+            elif dur > 7.0:
+                score -= 0.5
+                issues.append(f"Scene {i+1}: {dur:.1f}s on single image -- static.")
     return _clamp(score), issues
 
 # ── Visual flow ───────────────────────────────────────────────────────────────
 
-def score_flow_visual(run: ParsedRun, duration: float) -> tuple:
+def score_flow_visual(run: ParsedRun, duration: float, pacing_params: dict = None) -> tuple:
     score, issues = 10.0, []
+    v_cut = 7.0
+    if pacing_params:
+        v_cut = pacing_params.get("visual_cut_threshold", 2.8)
+        
     for i, s in enumerate(run.scenes):
-        if s["audio_dur"] > 7.0:
+        if s["audio_dur"] > v_cut and not s.get("has_alt_image"):
+            score -= 1.2; issues.append(f"Scene {i+1}: {s['audio_dur']:.1f}s exceeds visual cut threshold -- may bore viewers without B-roll.")
+        elif s["audio_dur"] > 7.0:
             score -= 1.2; issues.append(f"Scene {i+1}: {s['audio_dur']:.1f}s -- may bore viewers.")
+            
     if not any(s.get("has_image") for s in run.scenes):
         score -= 4.0; issues.append("No scenes have images -- entirely dark fallback.")
     return _clamp(score), issues
 
 # ── Pacing ────────────────────────────────────────────────────────────────────
 
-def score_pacing(run: ParsedRun) -> tuple:
+def score_pacing(run: ParsedRun, pacing_params: dict = None) -> tuple:
     durations = [s["audio_dur"] for s in run.scenes if s["audio_dur"] > 0]
     score, issues = 10.0, []
     if not durations:
         return 5.0, ["No audio data -- pacing cannot be evaluated."]
     avg = sum(durations) / len(durations)
     
-    if 4.0 <= avg <= 6.0:
+    target_low = 4.0
+    target_high = 6.0
+    if pacing_params:
+        pause = pacing_params.get("pause_after_sentence", 0.20)
+        if pause < 0.15:
+            target_low, target_high = 3.5, 5.5
+        elif pause > 0.25:
+            target_low, target_high = 4.5, 6.5
+            
+    if target_low <= avg <= target_high:
         issues.append(f"Pacing: GOOD (avg scene {avg:.1f}s)")
     else:
         score -= 2.0
-        issues.append(f"Pacing: WEAK (avg scene {avg:.1f}s, target 4-6s)")
+        issues.append(f"Pacing: WEAK (avg scene {avg:.1f}s, target {target_low:.1f}-{target_high:.1f}s)")
 
     std = math.sqrt(sum((d-avg)**2 for d in durations) / len(durations))
     if std > 2.5:
@@ -1006,14 +1144,22 @@ def main():
 
     # ── Score ─────────────────────────────────────────────────────────────
     print("\n[REVIEW] Scoring…")
+    pacing_params = None
+    if CorrelationEngine is not None:
+        try:
+            pacing_params = CorrelationEngine.get_optimized_pacing_and_style(run.channel_key, run.format_mode)
+            print(f"[REVIEW] Learned pacing benchmarks: visual_cut_threshold={pacing_params.get('visual_cut_threshold')}s, pause_after_sentence={pacing_params.get('pause_after_sentence')}s")
+        except Exception as e:
+            print(f"[REVIEW] Failed to load learned pacing benchmarks: {e}")
+
     s_script,  _ = score_script(run)
     s_length,  _ = score_length(duration)
     s_scenes,  _ = score_scenes(run)
     s_caps,    _ = score_captions(run)
     s_timing,  _ = score_timing(run)
-    s_images,  _ = score_images(run)
-    s_flow,    _ = score_flow_visual(run, duration)
-    s_pacing,  _ = score_pacing(run)
+    s_images,  _ = score_images(run, pacing_params)
+    s_flow,    _ = score_flow_visual(run, duration, pacing_params)
+    s_pacing,  _ = score_pacing(run, pacing_params)
 
     scores = {
         "script":      s_script,

@@ -681,6 +681,9 @@ def run_format_pipeline(fmt, article, args, RUN_ID, _pipeline_context):
         if tracked_story:
             episode_number = tracked_story["episode_count"] + 1
 
+    from db_manager import promote_scheduled_uploads
+    promote_scheduled_uploads()
+
     from correlation_engine import CorrelationEngine
     pacing_style = CorrelationEngine.get_optimized_pacing_and_style(channel_profile.key, fmt)
     top_scripts = CorrelationEngine.get_top_performing_script_contexts(
@@ -935,15 +938,24 @@ def run_format_pipeline(fmt, article, args, RUN_ID, _pipeline_context):
         _loc_key       = primary_location.lower().strip()
         _coord_override = COUNTRY_COORDS_OVERRIDE.get(_loc_key)
 
+        # Pillar 5: Milestone pace adaptive speed boost
+        try:
+            from db_manager import get_milestone_pace_status
+            _pace_info = get_milestone_pace_status()
+            adaptive_speed_boost = _pace_info.get("adaptive_speed_boost", 1.0)
+            print(f"[Main] Milestone Pace: '{_pace_info.get('pace_status')}' | Adaptive Speed Boost: {adaptive_speed_boost}x")
+        except Exception:
+            adaptive_speed_boost = 1.0
+
         map_image_path = None
-        _show_map      = _should_show_map(article, primary_location, _pipeline_context, scenes)
-        if primary_location and _show_map:
+        _show_map      = _should_show_map(article, primary_location, _pipeline_context, scenes) if fmt != "short" else False
+        if fmt != "short" and primary_location and _show_map:
             map_out        = os.path.join(IMAGE_DIR, f"map_stinger_{fmt}.jpg")
             map_image_path = generate_location_map(primary_location, map_out, coord_override=_coord_override)
 
         map_audio_path = None
         map_narration  = ""
-        if map_image_path and primary_location:
+        if fmt != "short" and map_image_path and primary_location:
             map_narration = _generate_map_hook(article, primary_location, _pipeline_context)
             map_narration = _clean_hook_sentence(map_narration)
             if not map_narration:
@@ -952,7 +964,8 @@ def run_format_pipeline(fmt, article, args, RUN_ID, _pipeline_context):
             map_audio_path = generate_audio(
                 map_narration, index=map_idx, context=_pipeline_context, language=channel_profile.language,
                 pause_after_sentence=pacing_style.get("pause_after_sentence"),
-                video_style=video_style
+                video_style=video_style,
+                adaptive_speed_boost=adaptive_speed_boost
             )
 
         for scene in scenes:
@@ -963,6 +976,8 @@ def run_format_pipeline(fmt, article, args, RUN_ID, _pipeline_context):
             scene["orientation"]   = "landscape" if fmt == "long" else "portrait"
 
         pipeline_meta = {
+            "fmt":              fmt,
+            "format":           fmt,
             "map_image_path":   map_image_path,
             "map_audio_path":   map_audio_path,
             "map_hook_text":    map_narration,
@@ -1016,7 +1031,8 @@ def run_format_pipeline(fmt, article, args, RUN_ID, _pipeline_context):
                 pause_after_sentence=pacing_style.get("pause_after_sentence"),
                 video_style=video_style,
                 is_paragraph_end=scene.get("is_paragraph_end", False),
-                is_verdict=scene.get("is_verdict", False)
+                is_verdict=scene.get("is_verdict", False),
+                adaptive_speed_boost=adaptive_speed_boost
             )
             return scene
 
@@ -1192,9 +1208,9 @@ def run_format_pipeline(fmt, article, args, RUN_ID, _pipeline_context):
                 pause_val,
                 cut_val,
                 len(scenes) if scenes else 0,
-                channel_profile.primary_color,
-                channel_profile.accent_color,
-                channel_profile.primary_color,
+                pacing_style.get("primary_color", channel_profile.primary_color),
+                pacing_style.get("accent_color", channel_profile.accent_color),
+                pacing_style.get("badge_color", channel_profile.primary_color),
                 pacing_style.get("font_family", "C:/Windows/Fonts/arialbd.ttf"),
                 1 if any(s.get("is_anchor", False) for s in scenes) else 0,
                 1 if pipeline_meta.get("show_map", False) else 0,
@@ -1263,7 +1279,7 @@ def run_format_pipeline(fmt, article, args, RUN_ID, _pipeline_context):
                     else:
                         country_code = "US"
 
-                safe_pub_time = get_geo_scheduled_upload_time(channel_profile.key, country=country_code)
+                safe_pub_time = get_geo_scheduled_upload_time(channel_profile.key, country=country_code, category=args.category)
                 print(f"[Auto-Upload] Calculated geo-targeted scheduled publish time for country '{country_code}': {safe_pub_time}")
             except Exception as sched_err:
                 print(f"[Auto-Upload] Safe scheduling check failed: {sched_err}. Uploading as private immediately.")
@@ -1313,122 +1329,137 @@ def main():
     parser.add_argument("--upload-jitter-max", type=int, help="Maximum upload scheduling jitter in minutes")
     args = parser.parse_args()
 
-    if args.upload_spacing is not None:
-        import config
-        config.UPLOAD_SPACING_MINUTES = args.upload_spacing
-    if args.upload_jitter_min is not None:
-        import config
-        config.UPLOAD_JITTER_MIN = args.upload_jitter_min
-    if args.upload_jitter_max is not None:
-        import config
-        config.UPLOAD_JITTER_MAX = args.upload_jitter_max
-
-    if args.video_style == "compilation" and args.format == "short":
-        print("[PIPELINE] WARNING: Compilation style is not supported for short format (shorts must be single-story). Switching video-style to 'briefing'.")
-        args.video_style = "briefing"
-
-    _pipeline_context = "neutral"
+    RUN_ID = str(uuid.uuid4())[:8]
     channel_profile = get_channel_profile(args.channel)
 
-    _memory_path  = os.path.join(OUTPUT_DIR, "used_topics.json")
-    _topic_memory = None
-    if not args.reset_memory and os.path.exists(_memory_path):
-        try:
-            with open(_memory_path, "r", encoding="utf-8") as _mf:
-                _topic_memory = _mf.read()
-        except Exception:
-            _topic_memory = None
+    try:
+        if args.upload_spacing is not None:
+            import config
+            config.UPLOAD_SPACING_MINUTES = args.upload_spacing
+        if args.upload_jitter_min is not None:
+            import config
+            config.UPLOAD_JITTER_MIN = args.upload_jitter_min
+        if args.upload_jitter_max is not None:
+            import config
+            config.UPLOAD_JITTER_MAX = args.upload_jitter_max
 
-    if not args.no_clean and not args.skip_to:
-        if os.path.exists(OUTPUT_DIR):
-            import stat
-            def _safe_rm(action, path, exc):
+        if args.video_style == "compilation" and args.format == "short":
+            print("[PIPELINE] WARNING: Compilation style is not supported for short format (shorts must be single-story). Switching video-style to 'briefing'.")
+            args.video_style = "briefing"
+
+        _pipeline_context = "neutral"
+
+        # Preflight self-learning diagnostics & system spacing audit
+        try:
+            from correlation_engine import CorrelationEngine
+            CorrelationEngine.generate_learning_diagnostics(channel_profile.key)
+        except Exception as diag_err:
+            print(f"[PREFLIGHT DIAGNOSTICS ERROR] Failed to display learning diagnostics: {diag_err}")
+
+        _memory_path  = os.path.join(OUTPUT_DIR, "used_topics.json")
+        _topic_memory = None
+        if not args.reset_memory and os.path.exists(_memory_path):
+            try:
+                with open(_memory_path, "r", encoding="utf-8") as _mf:
+                    _topic_memory = _mf.read()
+            except Exception:
+                _topic_memory = None
+
+        if not args.no_clean and not args.skip_to:
+            if os.path.exists(OUTPUT_DIR):
+                import stat
+                def _safe_rm(action, path, exc):
+                    try:
+                        os.chmod(path, stat.S_IWRITE)
+                        action(path)
+                    except Exception:
+                        pass
                 try:
-                    os.chmod(path, stat.S_IWRITE)
-                    action(path)
+                    shutil.rmtree(OUTPUT_DIR, onerror=_safe_rm)
                 except Exception:
                     pass
-            try:
-                shutil.rmtree(OUTPUT_DIR, onerror=_safe_rm)
-            except Exception:
-                pass
-        os.makedirs(AUDIO_DIR, exist_ok=True)
-        os.makedirs(IMAGE_DIR, exist_ok=True)
-        if _topic_memory:
-            with open(_memory_path, "w", encoding="utf-8") as _mf:
-                _mf.write(_topic_memory)
-        print("[SYSTEM] Output directory reset -- fresh run enabled")
-    else:
-        os.makedirs(AUDIO_DIR, exist_ok=True)
-        os.makedirs(IMAGE_DIR, exist_ok=True)
-        print("[SYSTEM] Using existing output directory")
-
-    RUN_ID = str(uuid.uuid4())[:8]
-    _update_run_stage(RUN_ID, channel_profile.key, args.category, args.format, "news", "running")
-    print(f"[RUN ID]: {RUN_ID}")
-    print("=" * 60)
-    print("  AI News-to-Video Generator")
-    print("=" * 60)
-    print(f"[PIPELINE] Initializing run {RUN_ID}")
-    print(f"[CHANNEL] {channel_profile.display_name} | Language: {channel_profile.language_label}")
-
-    # ── Stage 1: News ────────────────────────────────────────────────────────
-    article = None
-    if args.skip_to in ["script", "scenes", "assets", "video"]:
-        article = load_cache("article.json")
-        if article:
-            print("\n[SKIP] Loading cached article...")
-
-    if not article:
-        if args.video_style == "compilation":
-            if args.test_mode:
-                print("\n[1/5] Using mock compilation news data...")
-                mock_path = os.path.join(os.path.dirname(__file__), "tests", "mock_article.json")
-                with open(mock_path, "r") as f:
-                    article_data = json.load(f)
-                compilation_articles = [article_data] * 3
-            else:
-                print("\n[1/5] Fetching top 3 news stories for compilation...")
-                from news_fetcher import fetch_top_articles
-                compilation_articles = fetch_top_articles(category=args.category, channel=channel_profile.key, limit=3)
-            
-            # Create a synthetic article dictionary to cache
-            article = {
-                "title": f"Compilation: {', '.join([a.get('title', '') for a in compilation_articles])}",
-                "link": compilation_articles[0].get("link") if compilation_articles else "",
-                "summary": "Multi-story compilation video.",
-                "full_article_text": "\n\n".join([a.get("full_article_text") or "" for a in compilation_articles]),
-                "_compilation_articles": compilation_articles,
-                "verification_score": 100,
-                "cross_sources": []
-            }
+            os.makedirs(AUDIO_DIR, exist_ok=True)
+            os.makedirs(IMAGE_DIR, exist_ok=True)
+            if _topic_memory:
+                with open(_memory_path, "w", encoding="utf-8") as _mf:
+                    _mf.write(_topic_memory)
+            print("[SYSTEM] Output directory reset -- fresh run enabled")
         else:
-            if args.test_mode:
-                print("\n[1/5] Using mock news data...")
-                mock_path = os.path.join(os.path.dirname(__file__), "tests", "mock_article.json")
-                with open(mock_path, "r") as f:
-                    article = json.load(f)
+            os.makedirs(AUDIO_DIR, exist_ok=True)
+            os.makedirs(IMAGE_DIR, exist_ok=True)
+            print("[SYSTEM] Using existing output directory")
+
+        _update_run_stage(RUN_ID, channel_profile.key, args.category, args.format, "news", "running")
+        print(f"[RUN ID]: {RUN_ID}")
+        print("=" * 60)
+        print("  AI News-to-Video Generator")
+        print("=" * 60)
+        print(f"[PIPELINE] Initializing run {RUN_ID}")
+        print(f"[CHANNEL] {channel_profile.display_name} | Language: {channel_profile.language_label}")
+
+        # ── Stage 1: News ────────────────────────────────────────────────────────
+        article = None
+        if args.skip_to in ["script", "scenes", "assets", "video"]:
+            article = load_cache("article.json")
+            if article:
+                print("\n[SKIP] Loading cached article...")
+
+        if not article:
+            if args.video_style == "compilation":
+                if args.test_mode:
+                    print("\n[1/5] Using mock compilation news data...")
+                    mock_path = os.path.join(os.path.dirname(__file__), "tests", "mock_article.json")
+                    with open(mock_path, "r") as f:
+                        article_data = json.load(f)
+                    compilation_articles = [article_data] * 3
+                else:
+                    print("\n[1/5] Fetching top 3 news stories for compilation...")
+                    from news_fetcher import fetch_top_articles
+                    compilation_articles = fetch_top_articles(category=args.category, channel=channel_profile.key, limit=3)
+                
+                # Create a synthetic article dictionary to cache
+                article = {
+                    "title": f"Compilation: {', '.join([a.get('title', '') for a in compilation_articles])}",
+                    "link": compilation_articles[0].get("link") if compilation_articles else "",
+                    "summary": "Multi-story compilation video.",
+                    "full_article_text": "\n\n".join([a.get("full_article_text") or "" for a in compilation_articles]),
+                    "_compilation_articles": compilation_articles,
+                    "verification_score": 100,
+                    "cross_sources": []
+                }
             else:
-                print("\n[1/5] Fetching latest news...")
-                article = fetch_latest_article(category=args.category, channel=channel_profile.key)
+                if args.test_mode:
+                    print("\n[1/5] Using mock news data...")
+                    mock_path = os.path.join(os.path.dirname(__file__), "tests", "mock_article.json")
+                    with open(mock_path, "r") as f:
+                        article = json.load(f)
+                else:
+                    print("\n[1/5] Fetching latest news...")
+                    article = fetch_latest_article(category=args.category, channel=channel_profile.key)
 
-        if "_source_name" not in article:
-            article["_source_name"] = "World News"
-        article["_channel_key"] = channel_profile.key
-        article["_channel_name"] = channel_profile.display_name
-        article["_language"] = channel_profile.language
-        save_cache(article, "article.json")
+            if "_source_name" not in article:
+                article["_source_name"] = "World News"
+            article["_channel_key"] = channel_profile.key
+            article["_channel_name"] = channel_profile.display_name
+            article["_language"] = channel_profile.language
+            save_cache(article, "article.json")
 
-    if args.stage == "news":
-        return
+        if args.stage == "news":
+            return
 
-    # ── Stages 2–5 ───────────────────────────────────────────────────────────
-    _formats_to_run = ["short", "long"] if args.format == "both" else [args.format]
-    for _fmt in _formats_to_run:
-        _pipeline_context = run_format_pipeline(_fmt, article, args, RUN_ID, _pipeline_context)
+        # ── Stages 2–5 ───────────────────────────────────────────────────────────
+        _formats_to_run = ["short", "long"] if args.format == "both" else [args.format]
+        for _fmt in _formats_to_run:
+            _pipeline_context = run_format_pipeline(_fmt, article, args, RUN_ID, _pipeline_context)
 
-    _update_run_stage(RUN_ID, channel_profile.key, args.category, args.format, "complete", "success")
-    print("\n[PIPELINE] All formats complete. Exiting.")
+        _update_run_stage(RUN_ID, channel_profile.key, args.category, args.format, "complete", "success")
+        print("\n[PIPELINE] All formats complete. Exiting.")
+    except Exception as e:
+        import traceback
+        print(f"\n[ERROR] Pipeline run failed: {e}")
+        traceback.print_exc()
+        _update_run_stage(RUN_ID, channel_profile.key, args.category, args.format, "failed", "failed")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

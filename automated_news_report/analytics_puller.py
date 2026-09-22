@@ -218,6 +218,23 @@ class AnalyticsPuller:
             subscribers_gained = impressions = 0
             impression_ctr = card_ctr = 0.0
 
+        # ── 1.5 Real-time views fallback ──────────────────────────────────────
+        try:
+            realtime_resp = yt_data.videos().list(
+                part="statistics",
+                id=video_id
+            ).execute()
+            items = realtime_resp.get("items", [])
+            if items:
+                stats = items[0]["statistics"]
+                real_views = int(stats.get("viewCount", 0))
+                # If analytics returned 0 or low views (due to delay), use real-time views
+                if real_views > views:
+                    views = real_views
+                    print(f"[Analytics] Supplemented real-time views from Data API: {views}")
+        except Exception as e:
+            print(f"[Analytics] Failed to fetch real-time Data API views: {e}")
+
         # ── 2. Retention curve ────────────────────────────────────────────────
         retention_points = []
         try:
