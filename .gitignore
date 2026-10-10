@@ -1,0 +1,55 @@
+# ==============================================================================
+# Git Ignore Rules for News Forge AI
+# ==============================================================================
+
+# Environment & Credentials
+.env
+*.env
+client_secrets*.json
+token*.json
+
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+
+# Local SQLite Database Files
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.db
+db.sqlite
+db.sqlite-journal
+
+# Pipeline Outputs & Rendered Media
+output/
+**/output/
+output_test/
+**/output_test/
+*.mp4
+*.m4a
+*.mp3
+*.wav
+!automated_news_report/test.wav
+
+# Local Scratch & Temporary Debug Files
+scratch_*
+**/scratch_*
+
+# IDE & OS Artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

@@ -27,11 +27,13 @@ RSS_FEED_URL = "https://feeds.bbci.co.uk/news/rss.xml"
 NUM_SENTENCES = 5          # scenes in the final video
 
 # ── Piper TTS ─────────────────────────────────────────────────────────────────
-PIPER_EXECUTABLE = os.environ.get("PIPER_EXECUTABLE", "piper/piper.exe")
-PIPER_MODEL      = os.environ.get(
-    "PIPER_MODEL",
-    "./piper/en_US-lessac-medium.onnx"
-)
+_default_piper_exe = os.path.join(BASE_DIR, "piper", "piper.exe")
+_env_piper_exe = os.environ.get("PIPER_EXECUTABLE", _default_piper_exe)
+PIPER_EXECUTABLE = _env_piper_exe if os.path.isabs(_env_piper_exe) else os.path.normpath(os.path.join(BASE_DIR, _env_piper_exe))
+
+_default_piper_model = os.path.join(BASE_DIR, "piper", "en_US-lessac-medium.onnx")
+_env_piper_model = os.environ.get("PIPER_MODEL", _default_piper_model)
+PIPER_MODEL = _env_piper_model if os.path.isabs(_env_piper_model) else os.path.normpath(os.path.join(BASE_DIR, _env_piper_model))
 
 # ── Video (Short-Form defaults) ───────────────────────────────────────────────
 VIDEO_WIDTH   = 1080

@@ -1,0 +1,2 @@
+# News Forge AI - Production Dependencies
+-r automated_news_report/requirements.txt
